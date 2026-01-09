@@ -1,0 +1,10 @@
+抖音测试视频 - 不同URL格式
+
+# 格式1: v.douyin.com
+https://v.douyin.com/73075767586867398190
+
+# 格式2: www.douyin.com/video/
+https://www.douyin.com/video/73075767586867398190
+
+# 格式3: www.douyin.com/share/video/
+https://www.douyin.com/share/video/73075767586867398190

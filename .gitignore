@@ -1,0 +1,30 @@
+# 编译后的可执行文件
+batch_dl
+
+# 下载输出目录（排除视频文件）
+resource_urls/Output/*.mp4
+resource_urls/Output/*.m4v
+resource_urls/Output/*.m4a
+resource_urls/Output/*.mkv
+resource_urls/Output/*.avi
+resource_urls/Output/*.mov
+resource_urls/Output/*.wmv
+
+# 排除整个 Output 目录下的视频子目录
+resource_urls/Output/youtube/
+resource_urls/Output/tiktok/
+resource_urls/Output/bilibili/
+resource_urls/Output/unknown/
+
+# 保留索引文件和文档
+!resource_urls/Output/.youtube_downloaded.index
+!resource_urls/Output/下载记录.md
+
+# 临时文件
+*.tmp
+*.log
+*.swp
+*~
+
+# macOS
+.DS_Store
