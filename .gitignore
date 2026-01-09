@@ -1,5 +1,9 @@
 # 编译后的可执行文件
 batch_dl
+batch_download
+
+# Cookie 文件（包含敏感信息）
+cookies.txt
 
 # 下载输出目录（排除视频文件）
 resource_urls/Output/*.mp4
@@ -12,11 +16,18 @@ resource_urls/Output/*.wmv
 
 # 排除整个 Output 目录下的视频子目录
 resource_urls/Output/youtube/
+resource_urls/Output/douyin/
+resource_urls/Output/weibo/
 resource_urls/Output/tiktok/
 resource_urls/Output/bilibili/
+resource_urls/Output/vimeo/
+resource_urls/Output/instagram/
+resource_urls/Output/twitter/
+resource_urls/Output/facebook/
 resource_urls/Output/unknown/
 
 # 保留索引文件和文档
+!resource_urls/Output/.video_downloaded.index
 !resource_urls/Output/.youtube_downloaded.index
 !resource_urls/Output/下载记录.md
 
