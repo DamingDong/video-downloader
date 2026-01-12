@@ -1,6 +1,7 @@
 # 编译后的可执行文件
 batch_dl
 batch_download
+batch_download_new
 
 # Cookie 文件（包含敏感信息）
 cookies.txt
@@ -13,6 +14,8 @@ resource_urls/Output/*.mkv
 resource_urls/Output/*.avi
 resource_urls/Output/*.mov
 resource_urls/Output/*.wmv
+resource_urls/Output/*.webm
+resource_urls/Output/*.f302.webm.part
 
 # 排除整个 Output 目录下的视频子目录
 resource_urls/Output/youtube/
@@ -26,10 +29,25 @@ resource_urls/Output/twitter/
 resource_urls/Output/facebook/
 resource_urls/Output/unknown/
 
+# 新的 Output 目录
+Output/*.mp4
+Output/*.m4v
+Output/*.m4a
+Output/*.mkv
+Output/*.avi
+Output/*.mov
+Output/*.wmv
+Output/*.webm
+Output/*.f302.webm.part
+Output/*.part
+
 # 保留索引文件和文档
 !resource_urls/Output/.video_downloaded.index
 !resource_urls/Output/.youtube_downloaded.index
 !resource_urls/Output/下载记录.md
+!Output/.video_downloaded.index
+!Output/.video_downloaded.index.backup
+!Output/下载记录.md
 
 # 临时文件
 *.tmp
