@@ -125,7 +125,6 @@ go mod download
 
 # 编译程序
 go build -o batch_download main.go
-```
 
 编译成功后，会生成 `batch_download` 可执行文件。
 
