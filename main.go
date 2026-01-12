@@ -401,7 +401,7 @@ func printHelp() {
 	fmt.Println("        显示版本信息")
 	fmt.Println()
 	fmt.Println("下载器说明:")
-	fmt.Println("  youtube  - YouTube 专用下载器（使用 Go 库，性能更好）")
+	fmt.Println("  youtube  - YouTube 专用下载器（使用 Go 库，性能更好，支持 YouTube Shorts）")
 	fmt.Println("  multi    - 多平台下载器（使用 yt-dlp，支持9+平台）")
 	fmt.Println()
 	fmt.Println("配置文件 (config.json):")
@@ -421,7 +421,7 @@ func printHelp() {
 	fmt.Println("  }")
 	fmt.Println()
 	fmt.Println("示例:")
-	fmt.Println("  # 使用默认配置文件")
+	fmt.Println("  # 使用默认配置文件，扫描 resource_urls 目录")
 	fmt.Println("  ./batch_download")
 	fmt.Println()
 	fmt.Println("  # 使用自定义配置文件")
@@ -437,7 +437,7 @@ func printHelp() {
 	fmt.Println("  ./batch_download -log-level debug")
 	fmt.Println()
 	fmt.Println("支持的平台:")
-	fmt.Println("  YouTube, 抖音, 微博, Bilibili, TikTok, Vimeo, Instagram, Twitter, Facebook")
+	fmt.Println("  YouTube (含 Shorts), 抖音, 微博, Bilibili, TikTok, Vimeo, Instagram, Twitter, Facebook")
 }
 
 func printVersion() {
