@@ -36,7 +36,7 @@ func DefaultConfig() *Config {
 		IndexFile:         ".video_downloaded.index",
 		RecordFile:        "下载记录.md",
 		DefaultResolution: "720",
-		DefaultDownloader: "multi",
+		DefaultDownloader: "auto",
 	}
 }
 

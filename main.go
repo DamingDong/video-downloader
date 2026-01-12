@@ -85,8 +85,17 @@ func main() {
 			return
 		}
 		logger.GetLogger().Info("使用多平台下载器（支持9+平台）")
+	case "auto":
+		ytDL := downloader.NewYouTubeDownloader(cfg, idx)
+		multiDL := downloader.NewMultiPlatformDownloader(cfg, idx)
+		if err := multiDL.CheckYTDLP(); err != nil {
+			logger.GetLogger().Error("检查 yt-dlp 失败: %v", err)
+			return
+		}
+		dl = downloader.NewSmartDownloader(ytDL, multiDL)
+		logger.GetLogger().Info("使用智能下载器（自动检测平台，YouTube用专用，其他用multi）")
 	default:
-		logger.GetLogger().Error("不支持的下载器类型: %s (支持: youtube/multi)", cfg.DefaultDownloader)
+		logger.GetLogger().Error("不支持的下载器类型: %s (支持: youtube/multi/auto)", cfg.DefaultDownloader)
 		return
 	}
 
@@ -388,7 +397,10 @@ func printHelp() {
 	fmt.Println("  -f string")
 	fmt.Println("        URL文件路径")
 	fmt.Println("  -d string")
-	fmt.Println("        下载器类型 (youtube/multi) (默认: 从配置文件读取)")
+	fmt.Println("        下载器类型 (youtube/multi/auto) (默认: auto)")
+	fmt.Println("        youtube - YouTube 专用下载器（性能更好）")
+	fmt.Println("        multi  - 多平台下载器（支持9+平台）")
+	fmt.Println("        auto   - 自动检测（YouTube用专用，其他用multi）")
 	fmt.Println("  -c string")
 	fmt.Println("        配置文件路径 (默认: config.json)")
 	fmt.Println("  -log string")
@@ -403,6 +415,7 @@ func printHelp() {
 	fmt.Println("下载器说明:")
 	fmt.Println("  youtube  - YouTube 专用下载器（使用 Go 库，性能更好，支持 YouTube Shorts）")
 	fmt.Println("  multi    - 多平台下载器（使用 yt-dlp，支持9+平台）")
+	fmt.Println("  auto     - 自动检测（YouTube用专用下载器，其他平台用multi）")
 	fmt.Println()
 	fmt.Println("配置文件 (config.json):")
 	fmt.Println("  {")
@@ -417,7 +430,7 @@ func printHelp() {
 	fmt.Println("    \"index_file\": \".video_downloaded.index\",")
 	fmt.Println("    \"record_file\": \"下载记录.md\",")
 	fmt.Println("    \"default_resolution\": \"720\",")
-	fmt.Println("    \"default_downloader\": \"multi\"")
+	fmt.Println("    \"default_downloader\": \"auto\"")
 	fmt.Println("  }")
 	fmt.Println()
 	fmt.Println("示例:")
