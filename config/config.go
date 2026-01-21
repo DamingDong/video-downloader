@@ -9,34 +9,46 @@ import (
 )
 
 type Config struct {
-	BatchSize         int           `json:"batch_size"`
-	MaxConcurrency    int           `json:"max_concurrency"`
-	TimeoutPerVideo   time.Duration `json:"timeout_per_video"`
-	MaxRetries        int           `json:"max_retries"`
-	BaseRetryDelay    time.Duration `json:"base_retry_delay"`
-	DefaultOutputDir  string        `json:"default_output_dir"`
-	ResourceURLsDir   string        `json:"resource_urls_dir"`
-	CookieFile        string        `json:"cookie_file"`
-	IndexFile         string        `json:"index_file"`
-	RecordFile        string        `json:"record_file"`
-	DefaultResolution string        `json:"default_resolution"`
-	DefaultDownloader string        `json:"default_downloader"`
+	BatchSize              int           `json:"batch_size"`
+	MaxConcurrency         int           `json:"max_concurrency"`
+	TimeoutPerVideo        time.Duration `json:"timeout_per_video"`
+	MaxRetries             int           `json:"max_retries"`
+	BaseRetryDelay         time.Duration `json:"base_retry_delay"`
+	DefaultOutputDir       string        `json:"default_output_dir"`
+	ResourceURLsDir        string        `json:"resource_urls_dir"`
+	CookieFile             string        `json:"cookie_file"`
+	IndexFile              string        `json:"index_file"`
+	RecordFile             string        `json:"record_file"`
+	DefaultResolution      string        `json:"default_resolution"`
+	DefaultDownloader      string        `json:"default_downloader"`
+	OutputTemplate         string        `json:"output_template"`
+	GenerateMetaFile       bool          `json:"generate_meta_file"`
+	RecodeVideo            string        `json:"recode_video"`
+	MaxConcurrentDownloads int           `json:"max_concurrent_downloads"`
+	Proxy                  string        `json:"proxy"`
+	LimitRate              string        `json:"limit_rate"`
 }
 
 // ConfigJSON 用于JSON序列化和反序列化的辅助结构体
 type ConfigJSON struct {
-	BatchSize         int    `json:"batch_size"`
-	MaxConcurrency    int    `json:"max_concurrency"`
-	TimeoutPerVideo   string `json:"timeout_per_video"`
-	MaxRetries        int    `json:"max_retries"`
-	BaseRetryDelay    string `json:"base_retry_delay"`
-	DefaultOutputDir  string `json:"default_output_dir"`
-	ResourceURLsDir   string `json:"resource_urls_dir"`
-	CookieFile        string `json:"cookie_file"`
-	IndexFile         string `json:"index_file"`
-	RecordFile        string `json:"record_file"`
-	DefaultResolution string `json:"default_resolution"`
-	DefaultDownloader string `json:"default_downloader"`
+	BatchSize              int    `json:"batch_size"`
+	MaxConcurrency         int    `json:"max_concurrency"`
+	TimeoutPerVideo        string `json:"timeout_per_video"`
+	MaxRetries             int    `json:"max_retries"`
+	BaseRetryDelay         string `json:"base_retry_delay"`
+	DefaultOutputDir       string `json:"default_output_dir"`
+	ResourceURLsDir        string `json:"resource_urls_dir"`
+	CookieFile             string `json:"cookie_file"`
+	IndexFile              string `json:"index_file"`
+	RecordFile             string `json:"record_file"`
+	DefaultResolution      string `json:"default_resolution"`
+	DefaultDownloader      string `json:"default_downloader"`
+	OutputTemplate         string `json:"output_template"`
+	GenerateMetaFile       bool   `json:"generate_meta_file"`
+	RecodeVideo            string `json:"recode_video"`
+	MaxConcurrentDownloads int    `json:"max_concurrent_downloads"`
+	Proxy                  string `json:"proxy"`
+	LimitRate              string `json:"limit_rate"`
 }
 
 // UnmarshalJSON 实现自定义JSON反序列化方法
@@ -57,6 +69,12 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 	c.RecordFile = jsonCfg.RecordFile
 	c.DefaultResolution = jsonCfg.DefaultResolution
 	c.DefaultDownloader = jsonCfg.DefaultDownloader
+	c.OutputTemplate = jsonCfg.OutputTemplate
+	c.GenerateMetaFile = jsonCfg.GenerateMetaFile
+	c.RecodeVideo = jsonCfg.RecodeVideo
+	c.MaxConcurrentDownloads = jsonCfg.MaxConcurrentDownloads
+	c.Proxy = jsonCfg.Proxy
+	c.LimitRate = jsonCfg.LimitRate
 
 	// 解析时间字段
 	var err error
@@ -66,7 +84,7 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 			return fmt.Errorf("解析timeout_per_video失败: %w", err)
 		}
 	}
-	
+
 	if jsonCfg.BaseRetryDelay != "" {
 		c.BaseRetryDelay, err = time.ParseDuration(jsonCfg.BaseRetryDelay)
 		if err != nil {
@@ -80,18 +98,24 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 // MarshalJSON 实现自定义JSON序列化方法
 func (c *Config) MarshalJSON() ([]byte, error) {
 	jsonCfg := ConfigJSON{
-		BatchSize:         c.BatchSize,
-		MaxConcurrency:    c.MaxConcurrency,
-		TimeoutPerVideo:   c.TimeoutPerVideo.String(),
-		MaxRetries:        c.MaxRetries,
-		BaseRetryDelay:    c.BaseRetryDelay.String(),
-		DefaultOutputDir:  c.DefaultOutputDir,
-		ResourceURLsDir:   c.ResourceURLsDir,
-		CookieFile:        c.CookieFile,
-		IndexFile:         c.IndexFile,
-		RecordFile:        c.RecordFile,
-		DefaultResolution: c.DefaultResolution,
-		DefaultDownloader: c.DefaultDownloader,
+		BatchSize:              c.BatchSize,
+		MaxConcurrency:         c.MaxConcurrency,
+		TimeoutPerVideo:        c.TimeoutPerVideo.String(),
+		MaxRetries:             c.MaxRetries,
+		BaseRetryDelay:         c.BaseRetryDelay.String(),
+		DefaultOutputDir:       c.DefaultOutputDir,
+		ResourceURLsDir:        c.ResourceURLsDir,
+		CookieFile:             c.CookieFile,
+		IndexFile:              c.IndexFile,
+		RecordFile:             c.RecordFile,
+		DefaultResolution:      c.DefaultResolution,
+		DefaultDownloader:      c.DefaultDownloader,
+		OutputTemplate:         c.OutputTemplate,
+		GenerateMetaFile:       c.GenerateMetaFile,
+		RecodeVideo:            c.RecodeVideo,
+		MaxConcurrentDownloads: c.MaxConcurrentDownloads,
+		Proxy:                  c.Proxy,
+		LimitRate:              c.LimitRate,
 	}
 
 	return json.MarshalIndent(jsonCfg, "", "  ")
@@ -99,18 +123,24 @@ func (c *Config) MarshalJSON() ([]byte, error) {
 
 func DefaultConfig() *Config {
 	return &Config{
-		BatchSize:         10,
-		MaxConcurrency:    3,
-		TimeoutPerVideo:   60 * time.Minute,
-		MaxRetries:        3,
-		BaseRetryDelay:    2 * time.Second,
-		DefaultOutputDir:  "Output",
-		ResourceURLsDir:   "resource_urls",
-		CookieFile:        "cookies.txt",
-		IndexFile:         ".video_downloaded.index",
-		RecordFile:        "下载记录.md",
-		DefaultResolution: "720",
-		DefaultDownloader: "auto",
+		BatchSize:              10,
+		MaxConcurrency:         3,
+		TimeoutPerVideo:        60 * time.Minute,
+		MaxRetries:             3,
+		BaseRetryDelay:         2 * time.Second,
+		DefaultOutputDir:       "Output",
+		ResourceURLsDir:        "resource_urls",
+		CookieFile:             "cookies.txt",
+		IndexFile:              ".video_downloaded.index",
+		RecordFile:             "下载记录.md",
+		DefaultResolution:      "720",
+		DefaultDownloader:      "auto",
+		OutputTemplate:         "%(upload_date)s_%(title)s.%(ext)s",
+		GenerateMetaFile:       true,
+		RecodeVideo:            "mp4",
+		MaxConcurrentDownloads: 3,
+		Proxy:                  "",
+		LimitRate:              "",
 	}
 }
 

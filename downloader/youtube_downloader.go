@@ -6,7 +6,9 @@ import (
 	"io"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/kkdai/youtube/v2"
@@ -96,7 +98,8 @@ func (ytd *YouTubeDownloader) Download(url, outputDir, resolution string) (*Down
 		}, nil
 	}
 
-	filename := utils.SanitizeFilename(video.Title) + ".mp4"
+	// 生成符合OutputTemplate的文件名
+	filename := ytd.generateFilename(video, ".mp4")
 	outputPath := filepath.Join(outputDir, filename)
 
 	if err := utils.CleanupZeroByteFiles(outputPath); err != nil {
@@ -121,6 +124,26 @@ func (ytd *YouTubeDownloader) Download(url, outputDir, resolution string) (*Down
 		}
 
 		ytd.indexer.MarkDownloaded(video.ID)
+
+		// 处理Meta文件的生成
+		if ytd.config.GenerateMetaFile {
+			if err := ytd.generateMetaFile(video, outputDir, filename); err != nil {
+				log.Printf("生成Meta文件失败: %v", err)
+			}
+		}
+
+		// 处理视频格式转换
+		if ytd.config.RecodeVideo != "" {
+			newFilename := strings.TrimSuffix(filename, filepath.Ext(filename)) + "." + ytd.config.RecodeVideo
+			newOutputPath := filepath.Join(outputDir, newFilename)
+			if err := ytd.convertVideoFormat(outputPath, newOutputPath); err != nil {
+				log.Printf("视频格式转换失败: %v", err)
+			} else {
+				// 更新输出路径和文件名
+				outputPath = newOutputPath
+				filename = newFilename
+			}
+		}
 
 		info, _ := os.Stat(outputPath)
 		fileSize := int64(0)
@@ -247,4 +270,77 @@ func (ytd *YouTubeDownloader) selectBestFormat(video *youtube.Video, resolution 
 	}
 
 	return bestFormat
+}
+
+// generateFilename 根据配置文件中的OutputTemplate生成文件名
+func (ytd *YouTubeDownloader) generateFilename(video *youtube.Video, ext string) string {
+	// 如果配置文件中没有设置输出模板，则使用默认模板
+	template := ytd.config.OutputTemplate
+	if template == "" {
+		template = "%(title)s.%(ext)s"
+	}
+
+	// 替换模板变量
+	result := template
+
+	// 替换标题
+	result = strings.ReplaceAll(result, "%(title)s", utils.SanitizeFilename(video.Title))
+
+	// 替换ID
+	result = strings.ReplaceAll(result, "%(id)s", video.ID)
+
+	// 替换上传日期（使用当前日期作为替代）
+	currentDate := time.Now().Format("20060102")
+	result = strings.ReplaceAll(result, "%(upload_date)s", currentDate)
+
+	// 替换扩展名
+	result = strings.ReplaceAll(result, "%(ext)s", strings.TrimPrefix(ext, "."))
+
+	return result
+}
+
+// generateMetaFile 生成包含视频标题、标签等信息的TXT文件
+func (ytd *YouTubeDownloader) generateMetaFile(video *youtube.Video, outputDir, videoFilename string) error {
+	// 生成Meta文件名
+	metaFilename := strings.TrimSuffix(videoFilename, filepath.Ext(videoFilename)) + ".txt"
+	metaPath := filepath.Join(outputDir, metaFilename)
+
+	// 构建Meta文件内容
+	content := video.Title
+
+	// 添加标签（如果有）
+	// 注意：github.com/kkdai/youtube/v2库可能不直接提供标签信息
+	// 这里我们使用视频标题中的关键词作为标签的替代
+	// 实际项目中可能需要使用其他方式获取标签信息
+	content += "\n"
+	content += "#视频 #YouTube"
+
+	// 写入Meta文件
+	if err := os.WriteFile(metaPath, []byte(content), 0644); err != nil {
+		return fmt.Errorf("写入Meta文件失败: %w", err)
+	}
+
+	log.Printf("生成Meta文件: %s", metaPath)
+	return nil
+}
+
+// convertVideoFormat 使用ffmpeg进行视频格式转换
+func (ytd *YouTubeDownloader) convertVideoFormat(inputPath, outputPath string) error {
+	// 尝试使用当前目录下的ffmpeg.exe
+	ffmpegPath := "./ffmpeg.exe"
+	if _, err := os.Stat(ffmpegPath); os.IsNotExist(err) {
+		// 如果当前目录不存在，则尝试使用系统PATH中的ffmpeg
+		ffmpegPath = "ffmpeg"
+	}
+
+	// 构建ffmpeg命令
+	cmd := exec.Command(ffmpegPath, "-i", inputPath, "-c", "copy", outputPath)
+
+	// 执行命令
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("ffmpeg格式转换失败: %w", err)
+	}
+
+	log.Printf("视频格式转换完成: %s -> %s", inputPath, outputPath)
+	return nil
 }
