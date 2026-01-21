@@ -1,4 +1,4 @@
-# 批量视频下载工具 v2.0 - 混合架构
+# 批量视频下载工具 v2.1 - 新增功能
 
 ## 概述
 
@@ -24,6 +24,8 @@
 - **配置管理**：支持 JSON 配置文件和命令行参数
 - **自动清理**：自动清理 0 字节的失败文件
 - **下载记录**：自动生成和更新下载记录文档
+- **自定义输出文件名**：支持配置文件名模板，如 `%(upload_date)s_%(title)s.%(ext)s`
+- **Meta 文件生成**：自动生成包含视频标题和标签的 `.txt` 文件
 
 ### YouTube 专用下载器
 
@@ -127,6 +129,7 @@ go mod download
 go build -o batch_download main.go
 
 编译成功后，会生成 `batch_download` 可执行文件。
+```
 
 ## 使用方法
 
@@ -223,7 +226,13 @@ go build -o batch_download main.go
   "index_file": ".video_downloaded.index",
   "record_file": "下载记录.md",
   "default_resolution": "720",
-  "default_downloader": "multi"
+  "default_downloader": "multi",
+  "output_template": "%(upload_date)s_%(title)s.%(ext)s",
+  "generate_meta_file": true,
+  "recode_video": "mp4",
+  "max_concurrent_downloads": 3,
+  "proxy": "",
+  "limit_rate": ""
 }
 ```
 
@@ -243,6 +252,12 @@ go build -o batch_download main.go
 | `record_file` | 下载记录文件路径 | 下载记录.md |
 | `default_resolution` | 默认分辨率 | 720 |
 | `default_downloader` | 默认下载器 | multi |
+| `output_template` | 自定义输出文件名模板 | `%(upload_date)s_%(title)s.%(ext)s` |
+| `generate_meta_file` | 是否生成 Meta 文件 | true |
+| `recode_video` | 视频格式转换目标格式 | "" |
+| `max_concurrent_downloads` | 最大并发下载数量（yt-dlp） | 3 |
+| `proxy` | 网络代理设置 | "" |
+| `limit_rate` | 下载速度限制 | "" |
 
 ## 支持的平台
 
@@ -553,6 +568,16 @@ batch_download_videos/
 
 ## 版本历史
 
+### v2.1.0 (2026-01-21)
+
+**功能更新**：自定义输出文件名和 Meta 文件生成
+
+- ✅ 实现自定义输出文件名功能，支持模板变量
+- ✅ 实现 Meta 文件生成功能，包含视频标题和标签
+- ✅ 修复 yt-dlp 版本兼容性问题
+- ✅ 优化多平台下载器的错误处理
+- ✅ 添加新的配置项：output_template、generate_meta_file、recode_video 等
+
 ### v2.0.0 (2026-01-12)
 
 **重大更新**：混合架构
@@ -593,7 +618,7 @@ batch_download_videos/
 
 ---
 
-**项目版本**：v2.0.0（混合架构）
-**最后更新**：2026-01-12
+**项目版本**：v2.1.0（新增功能）
+**最后更新**：2026-01-21
 **Go 版本**：1.25.0
 **许可证**：MIT

@@ -40,6 +40,9 @@ Output/*.wmv
 Output/*.webm
 Output/*.f302.webm.part
 Output/*.part
+Output/*.info.json
+Output/*.ytdl
+Output/*.txt
 
 # 保留索引文件和文档
 !resource_urls/Output/.video_downloaded.index
