@@ -93,8 +93,8 @@ func (mpd *MultiPlatformDownloader) Download(url, outputDir, resolution string) 
 	log.Printf("[调试] 开始处理下载请求: %s", url)
 
 	// 首先检查URL类型，判断是否为频道或播放列表
-	isPlaylist := strings.Contains(url, "/playlist?") || strings.Contains(url, "/watch?v=") && strings.Contains(url, "&list=")
-	isChannel := strings.Contains(url, "/@") || strings.Contains(url, "/channel/")
+	isPlaylist := strings.Contains(url, "list=")
+	isChannel := strings.Contains(url, "/@") || strings.Contains(url, "/channel/") || strings.Contains(url, "/c/") || strings.Contains(url, "/user/")
 
 	log.Printf("[调试] URL类型: 播放列表=%t, 频道=%t", isPlaylist, isChannel)
 
@@ -257,14 +257,8 @@ func (mpd *MultiPlatformDownloader) Download(url, outputDir, resolution string) 
 	log.Printf("开始下载: %s (ID: %s, 网站: %s, 分辨率: %s)", info.Title, uniqueID, website, resolution)
 
 	qualityFormat := utils.GetQualityFormat(resolution)
-	// 使用配置文件中的输出模板
-	outputTemplate := filepath.Join(outputDir, mpd.config.OutputTemplate)
-	// 如果配置文件中没有设置输出模板，则使用默认模板
-	if mpd.config.OutputTemplate == "" {
-		outputTemplate = filepath.Join(outputDir, "%(title)s.%(ext)s")
-	}
-
-	filename := utils.SanitizeFilename(info.Title) + ".mp4"
+	// 生成文件名
+	filename := mpd.generateFilename(info, ".mp4")
 	filePath := filepath.Join(outputDir, filename)
 
 	if err := utils.CleanupZeroByteFiles(filePath); err != nil {
@@ -277,7 +271,7 @@ func (mpd *MultiPlatformDownloader) Download(url, outputDir, resolution string) 
 
 	args := []string{
 		"-f", qualityFormat,
-		"-o", outputTemplate,
+		"-o", filePath,
 		"--no-warnings",
 		"--continue",      // 支持断点续传
 		"--no-overwrites", // 不覆盖已存在的文件
@@ -385,6 +379,75 @@ func (mpd *MultiPlatformDownloader) MarkDownloaded(videoID string) error {
 	return nil
 }
 
+// generateFilename 根据配置文件中的OutputTemplate生成文件名
+func (mpd *MultiPlatformDownloader) generateFilename(info *VideoInfo, ext string) string {
+	// 如果配置文件中没有设置输出模板，则使用默认模板
+	template := mpd.config.OutputTemplate
+	if template == "" {
+		template = "%(title)s.%(ext)s"
+	}
+
+	// 替换模板变量
+	result := template
+
+	// 替换标题
+	title := utils.SanitizeFilename(info.Title)
+	// 应用文件名最大长度限制
+	if mpd.config.FilenameMaxLength > 0 && len(title) > mpd.config.FilenameMaxLength {
+		title = utils.TruncateString(title, mpd.config.FilenameMaxLength)
+	}
+	result = strings.ReplaceAll(result, "%(title)s", title)
+
+	// 替换ID
+	result = strings.ReplaceAll(result, "%(id)s", info.ID)
+
+	// 替换作者
+	author := utils.SanitizeFilename(info.Uploader)
+	result = strings.ReplaceAll(result, "%(author)s", author)
+	result = strings.ReplaceAll(result, "%(uploader)s", author)
+
+	// 替换分辨率
+	resolution := info.Resolution
+	result = strings.ReplaceAll(result, "%(resolution)s", resolution)
+
+	// 替换时长
+	duration := fmt.Sprintf("%d", info.Duration)
+	result = strings.ReplaceAll(result, "%(duration)s", duration)
+
+	// 替换上传日期（使用当前日期作为替代）
+	currentDate := time.Now()
+	uploadDate := currentDate.Format("20060102")
+	result = strings.ReplaceAll(result, "%(upload_date)s", uploadDate)
+
+	// 替换下载日期和时间
+	date := currentDate.Format("20060102")
+	timeStr := currentDate.Format("150405")
+	timestamp := currentDate.Format("20060102_150405")
+	year := currentDate.Format("2006")
+	month := currentDate.Format("01")
+	day := currentDate.Format("02")
+
+	result = strings.ReplaceAll(result, "%(date)s", date)
+	result = strings.ReplaceAll(result, "%(time)s", timeStr)
+	result = strings.ReplaceAll(result, "%(timestamp)s", timestamp)
+	result = strings.ReplaceAll(result, "%(year)s", year)
+	result = strings.ReplaceAll(result, "%(month)s", month)
+	result = strings.ReplaceAll(result, "%(day)s", day)
+
+	// 替换扩展名
+	result = strings.ReplaceAll(result, "%(ext)s", strings.TrimPrefix(ext, "."))
+
+	// 清理重复的下划线和点
+	for strings.Contains(result, "__") {
+		result = strings.ReplaceAll(result, "__", "_")
+	}
+	for strings.Contains(result, "..") {
+		result = strings.ReplaceAll(result, "..", ".")
+	}
+
+	return result
+}
+
 func (mpd *MultiPlatformDownloader) getUniqueID(url string, info *VideoInfo) string {
 	if info.ID != "" {
 		return info.ID
@@ -407,7 +470,7 @@ func (mpd *MultiPlatformDownloader) CheckYTDLP() error {
 	return nil
 }
 
-// ProcessMetaFiles 处理Meta文件的生成
+// ProcessMetaFiles 处理Meta文件的生成和视频文件的重命名
 func (mpd *MultiPlatformDownloader) ProcessMetaFiles(outputDir string) error {
 	// 遍历outputDir目录，查找所有的info.json文件
 	files, err := os.ReadDir(outputDir)
@@ -463,6 +526,83 @@ func (mpd *MultiPlatformDownloader) ProcessMetaFiles(outputDir string) error {
 			}
 
 			log.Printf("生成Meta文件: %s", txtPath)
+		}
+	}
+
+	// 遍历outputDir目录，查找所有的视频文件，并重命名它们
+	for _, file := range files {
+		if file.IsDir() {
+			continue
+		}
+
+		filename := file.Name()
+		// 检查文件是否为视频文件
+		if strings.HasSuffix(filename, ".mp4") || strings.HasSuffix(filename, ".mkv") || strings.HasSuffix(filename, ".avi") || strings.HasSuffix(filename, ".mov") {
+			// 读取并解析对应的info.json文件
+			jsonFilename := strings.TrimSuffix(filename, filepath.Ext(filename)) + ".info.json"
+			jsonPath := filepath.Join(outputDir, jsonFilename)
+			if _, err := os.Stat(jsonPath); err != nil {
+				// 如果没有对应的info.json文件，则跳过
+				continue
+			}
+
+			data, err := os.ReadFile(jsonPath)
+			if err != nil {
+				log.Printf("读取info.json文件失败: %v", err)
+				continue
+			}
+
+			// 解析JSON数据
+			var info struct {
+				Title string `json:"title"`
+				ID    string `json:"id"`
+			}
+
+			if err := json.Unmarshal(data, &info); err != nil {
+				log.Printf("解析info.json文件失败: %v", err)
+				continue
+			}
+
+			// 创建VideoInfo对象
+			videoInfo := &VideoInfo{
+				Title: info.Title,
+				ID:    info.ID,
+			}
+
+			// 生成新的文件名
+			ext := filepath.Ext(filename)
+			newFilename := mpd.generateFilename(videoInfo, ext)
+			newFilePath := filepath.Join(outputDir, newFilename)
+			oldFilePath := filepath.Join(outputDir, filename)
+
+			// 检查新文件名是否与旧文件名不同
+			if newFilename != filename {
+				// 重命名文件
+				if err := os.Rename(oldFilePath, newFilePath); err != nil {
+					log.Printf("重命名文件失败: %v", err)
+					continue
+				}
+
+				log.Printf("重命名文件: %s -> %s", oldFilePath, newFilePath)
+
+				// 重命名对应的info.json文件
+				newJsonFilename := strings.TrimSuffix(newFilename, filepath.Ext(newFilename)) + ".info.json"
+				newJsonPath := filepath.Join(outputDir, newJsonFilename)
+				if err := os.Rename(jsonPath, newJsonPath); err != nil {
+					log.Printf("重命名info.json文件失败: %v", err)
+				}
+
+				// 重命名对应的txt文件
+				newTxtFilename := strings.TrimSuffix(newFilename, filepath.Ext(newFilename)) + ".txt"
+				newTxtPath := filepath.Join(outputDir, newTxtFilename)
+				oldTxtFilename := strings.TrimSuffix(filename, filepath.Ext(filename)) + ".txt"
+				oldTxtPath := filepath.Join(outputDir, oldTxtFilename)
+				if _, err := os.Stat(oldTxtPath); err == nil {
+					if err := os.Rename(oldTxtPath, newTxtPath); err != nil {
+						log.Printf("重命名txt文件失败: %v", err)
+					}
+				}
+			}
 		}
 	}
 

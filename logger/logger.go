@@ -10,8 +10,37 @@ import (
 	"time"
 )
 
+// Logger 定义日志记录器接口
+type Logger interface {
+	Debug(format string, args ...interface{})
+	Info(format string, args ...interface{})
+	Warn(format string, args ...interface{})
+	Error(format string, args ...interface{})
+	BatchStart(totalTasks, concurrency int)
+	BatchComplete(success, fail, skip, total int)
+	DownloadSuccess(videoID, title string, retryCount int, fileSize int64)
+	DownloadFail(videoID, title string, err error, retryCount int)
+	DownloadSkip(videoID, title string)
+	Close()
+}
+
+// SimpleLogger 实现简单的日志记录器
+type SimpleLogger struct {
+	debugLogger *log.Logger
+	infoLogger  *log.Logger
+	warnLogger  *log.Logger
+	errorLogger *log.Logger
+}
+
+var ( // 全局日志记录器
+	globalLogger Logger
+	once         sync.Once
+)
+
+// LogLevel 定义日志级别
 type LogLevel int
 
+// 日志级别常量
 const (
 	DEBUG LogLevel = iota
 	INFO
@@ -19,145 +48,127 @@ const (
 	ERROR
 )
 
-type Logger struct {
-	mu            sync.Mutex
-	level         LogLevel
-	fileLogger    *log.Logger
-	consoleLogger *log.Logger
-	logFile       *os.File
-}
-
-var (
-	instance *Logger
-	once     sync.Once
+// 日志级别字符串映射
+const (
+	LogLevelDebug = "debug"
+	LogLevelInfo  = "info"
+	LogLevelWarn  = "warn"
+	LogLevelError = "error"
 )
 
-func InitLogger(logDir string, level LogLevel) (*Logger, error) {
-	var initErr error
+// InitLogger 初始化日志记录器
+func InitLogger(logDir string, level LogLevel) (Logger, error) {
+	// 确保日志目录存在
+	if err := os.MkdirAll(logDir, 0755); err != nil {
+		return nil, fmt.Errorf("创建日志目录失败: %w", err)
+	}
+
+	// 创建日志文件
+	logFile := filepath.Join(logDir, time.Now().Format("2006-01-02")+".log")
+	file, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return nil, fmt.Errorf("打开日志文件失败: %w", err)
+	}
+
+	// 创建日志记录器
+	logger := &SimpleLogger{
+		debugLogger: log.New(io.MultiWriter(os.Stdout, file), "[DEBUG] ", log.Ldate|log.Ltime),
+		infoLogger:  log.New(io.MultiWriter(os.Stdout, file), "[INFO] ", log.Ldate|log.Ltime),
+		warnLogger:  log.New(io.MultiWriter(os.Stdout, file), "[WARN] ", log.Ldate|log.Ltime),
+		errorLogger: log.New(io.MultiWriter(os.Stderr, file), "[ERROR] ", log.Ldate|log.Ltime),
+	}
+
+	return logger, nil
+}
+
+// GetLogger 获取全局日志记录器
+func GetLogger() Logger {
 	once.Do(func() {
-		instance = &Logger{
-			level:         level,
-			consoleLogger: log.New(os.Stdout, "", log.LstdFlags),
-		}
-
-		if logDir != "" {
-			if err := os.MkdirAll(logDir, 0755); err != nil {
-				initErr = fmt.Errorf("创建日志目录失败: %w", err)
-				return
-			}
-
-			timestamp := time.Now().Format("20060102_150405")
-			logPath := filepath.Join(logDir, fmt.Sprintf("download_%s.log", timestamp))
-
-			file, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-			if err != nil {
-				initErr = fmt.Errorf("打开日志文件失败: %w", err)
-				return
-			}
-
-			instance.logFile = file
-			instance.fileLogger = log.New(io.MultiWriter(os.Stdout, file), "", log.LstdFlags)
-		}
+		globalLogger = NewSimpleLogger()
 	})
-
-	return instance, initErr
+	return globalLogger
 }
 
-func GetLogger() *Logger {
-	if instance == nil {
-		InitLogger("", INFO)
-	}
-	return instance
-}
-
-func (l *Logger) SetLevel(level LogLevel) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.level = level
-}
-
-func (l *Logger) Close() error {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	if l.logFile != nil {
-		return l.logFile.Close()
-	}
-	return nil
-}
-
-func (l *Logger) Debug(format string, v ...interface{}) {
-	if l.level <= DEBUG {
-		l.log("[DEBUG]", format, v...)
+// NewSimpleLogger 创建新的简单日志记录器
+func NewSimpleLogger() Logger {
+	return &SimpleLogger{
+		debugLogger: log.New(os.Stdout, "[DEBUG] ", log.Ldate|log.Ltime),
+		infoLogger:  log.New(os.Stdout, "[INFO] ", log.Ldate|log.Ltime),
+		warnLogger:  log.New(os.Stdout, "[WARN] ", log.Ldate|log.Ltime),
+		errorLogger: log.New(os.Stderr, "[ERROR] ", log.Ldate|log.Ltime),
 	}
 }
 
-func (l *Logger) Info(format string, v ...interface{}) {
-	if l.level <= INFO {
-		l.log("[INFO]", format, v...)
-	}
+// formatMessage 格式化日志消息
+func formatMessage(format string, args ...interface{}) string {
+	timestamp := time.Now().Format("2006-01-02 15:04:05")
+	message := fmt.Sprintf(format, args...)
+	return fmt.Sprintf("%s %s", timestamp, message)
 }
 
-func (l *Logger) Warn(format string, v ...interface{}) {
-	if l.level <= WARN {
-		l.log("[WARN]", format, v...)
-	}
+// Debug 记录调试日志
+func (l *SimpleLogger) Debug(format string, args ...interface{}) {
+	message := formatMessage(format, args...)
+	l.debugLogger.Println(message)
 }
 
-func (l *Logger) Error(format string, v ...interface{}) {
-	if l.level <= ERROR {
-		l.log("[ERROR]", format, v...)
-	}
+// Info 记录信息日志
+func (l *SimpleLogger) Info(format string, args ...interface{}) {
+	message := formatMessage(format, args...)
+	l.infoLogger.Println(message)
 }
 
-func (l *Logger) log(level, format string, v ...interface{}) {
-	message := fmt.Sprintf("%s %s", level, fmt.Sprintf(format, v...))
+// Warn 记录警告日志
+func (l *SimpleLogger) Warn(format string, args ...interface{}) {
+	message := formatMessage(format, args...)
+	l.warnLogger.Println(message)
+}
 
-	l.mu.Lock()
-	defer l.mu.Unlock()
+// Error 记录错误日志
+func (l *SimpleLogger) Error(format string, args ...interface{}) {
+	message := formatMessage(format, args...)
+	l.errorLogger.Println(message)
+}
 
-	if l.fileLogger != nil {
-		l.fileLogger.Println(message)
+// BatchStart 记录批处理开始
+func (l *SimpleLogger) BatchStart(totalTasks, concurrency int) {
+	message := formatMessage("开始批处理下载任务: %d 个任务, 并发数: %d", totalTasks, concurrency)
+	l.infoLogger.Println(message)
+}
+
+// BatchComplete 记录批处理完成
+func (l *SimpleLogger) BatchComplete(success, fail, skip, total int) {
+	message := formatMessage("批处理下载任务完成: 成功=%d, 失败=%d, 跳过=%d, 总计=%d", success, fail, skip, total)
+	l.infoLogger.Println(message)
+}
+
+// DownloadSuccess 记录下载成功
+func (l *SimpleLogger) DownloadSuccess(videoID, title string, retryCount int, fileSize int64) {
+	fileSizeMB := float64(fileSize) / (1024 * 1024)
+	message := formatMessage("下载成功: %s (ID: %s, 重试: %d, 大小: %.2f MB)", title, videoID, retryCount, fileSizeMB)
+	l.infoLogger.Println(message)
+}
+
+// DownloadFail 记录下载失败
+func (l *SimpleLogger) DownloadFail(videoID, title string, err error, retryCount int) {
+	var errMsg string
+	if err != nil {
+		errMsg = err.Error()
 	} else {
-		l.consoleLogger.Println(message)
+		errMsg = "未知错误"
 	}
+	message := formatMessage("下载失败: %s (ID: %s, 重试: %d, 错误: %s)", title, videoID, retryCount, errMsg)
+	l.errorLogger.Println(message)
 }
 
-func (l *Logger) DownloadStart(videoID, title string) {
-	l.Info("开始下载: %s (ID: %s)", title, videoID)
+// DownloadSkip 记录下载跳过
+func (l *SimpleLogger) DownloadSkip(videoID, title string) {
+	message := formatMessage("下载跳过: %s (ID: %s)", title, videoID)
+	l.infoLogger.Println(message)
 }
 
-func (l *Logger) DownloadSuccess(videoID, title string, retryCount int, fileSize int64) {
-	l.Info("下载成功: %s (ID: %s, 重试: %d, 大小: %s)",
-		title, videoID, retryCount, formatFileSize(fileSize))
-}
-
-func (l *Logger) DownloadFail(videoID, title string, err error, retryCount int) {
-	l.Error("下载失败: %s (ID: %s, 尝试: %d, 错误: %v)",
-		title, videoID, retryCount, err)
-}
-
-func (l *Logger) DownloadSkip(videoID, title string) {
-	l.Info("跳过已下载: %s (ID: %s)", title, videoID)
-}
-
-func (l *Logger) BatchStart(total int, maxConcurrency int) {
-	l.Info("开始处理 %d 个URL，最大并发数: %d", total, maxConcurrency)
-}
-
-func (l *Logger) BatchComplete(success, fail, skip, total int) {
-	l.Info("下载完成统计: 成功=%d, 失败=%d, 跳过=%d, 总计=%d",
-		success, fail, skip, total)
-}
-
-func formatFileSize(bytes int64) string {
-	if bytes < 1024 {
-		return fmt.Sprintf("%d B", bytes)
-	}
-	div, exp := int64(1024), 0
-	for n := bytes / 1024; n >= 1024; n /= 1024 {
-		div *= 1024
-		exp++
-	}
-	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
+// Close 关闭日志记录器
+func (l *SimpleLogger) Close() {
+	// 简单实现，因为标准日志记录器不需要关闭
+	l.infoLogger.Println(formatMessage("日志记录器已关闭"))
 }

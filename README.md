@@ -26,6 +26,9 @@
 - **下载记录**：自动生成和更新下载记录文档
 - **自定义输出文件名**：支持配置文件名模板，如 `%(upload_date)s_%(title)s.%(ext)s`
 - **Meta 文件生成**：自动生成包含视频标题和标签的 `.txt` 文件
+- **任务队列管理**：支持任务暂停、恢复和取消操作
+- **代理支持**：可配置网络代理，提高在不同网络环境下的下载成功率
+- **文件名长度限制**：可配置文件名最大长度，避免文件名过长导致的问题
 
 ### YouTube 专用下载器
 
@@ -227,11 +230,13 @@ go build -o batch_download main.go
   "default_resolution": "720",
   "default_downloader": "multi",
   "output_template": "%(upload_date)s_%(title)s.%(ext)s",
+  "filename_max_length": 200,
   "generate_meta_file": true,
   "recode_video": "mp4",
   "max_concurrent_downloads": 3,
   "proxy": "",
-  "limit_rate": ""
+  "limit_rate": "",
+  "ffmpeg_path": ""
 }
 ```
 
@@ -257,6 +262,8 @@ go build -o batch_download main.go
 | `max_concurrent_downloads` | 最大并发下载数量（yt-dlp） | 3 |
 | `proxy` | 网络代理设置 | "" |
 | `limit_rate` | 下载速度限制 | "" |
+| `filename_max_length` | 文件名最大长度限制 | 200 |
+| `ffmpeg_path` | ffmpeg 可执行文件路径 | "" |
 
 ## 支持的平台
 
@@ -362,7 +369,7 @@ https://www.bilibili.com/video/BV1xx411c7mD
 
 ### 2. （可选）创建配置文件
 
-在项目根目录创建 `config.json` 文件：
+系统会在首次运行时自动生成默认的 `config.json` 文件。如果需要自定义配置，可以在项目根目录创建或修改 `config.json` 文件：
 
 ```json
 {
@@ -371,6 +378,8 @@ https://www.bilibili.com/video/BV1xx411c7mD
   "max_concurrency": 5
 }
 ```
+
+**注意**：当配置文件不存在时，系统会自动生成包含所有默认值的配置文件，确保程序能够正常运行。
 
 ### 3. （可选）配置 Cookie（用于需要登录的视频）
 
@@ -567,6 +576,38 @@ batch_download_videos/
 
 ## 版本历史
 
+### v2.4.0 (2026-01-23)
+
+**功能更新**：配置文件自动生成和错误处理优化
+
+- ✅ 添加配置文件自动生成功能，当配置文件不存在时自动生成默认配置
+- ✅ 优化配置加载逻辑，确保配置文件缺失时的平滑处理
+- ✅ 提高系统的容错能力，减少因配置问题导致的运行失败
+- ✅ 完善测试覆盖，验证核心功能（断点续传、格式转换、超时、重试、代理、限速）
+
+### v2.3.0 (2026-01-22)
+
+**功能更新**：ffmpeg 配置支持和代码优化
+
+- ✅ 添加 `ffmpeg_path` 配置项，支持自定义 ffmpeg 路径
+- ✅ 优化 YouTube 下载器的 ffmpeg 路径检测逻辑
+- ✅ 修复配置文件中 `ResourceUrlsDir` 字段的拼写错误
+- ✅ 确保所有下载器都使用一致的配置管理
+- ✅ 优化代码结构，提高可维护性
+
+### v2.2.0 (2026-01-22)
+
+**功能更新**：任务队列管理、代理支持和完善文档
+
+- ✅ 实现任务队列管理功能，支持任务暂停、恢复和取消
+- ✅ 添加代理支持，提高在不同网络环境下的下载成功率
+- ✅ 实现文件名长度限制，避免文件名过长导致的问题
+- ✅ 完善智能重试机制，采用指数退避策略
+- ✅ 编写详细的 API 参考文档
+- ✅ 全面更新 README.md 文档，包含所有新功能说明
+- ✅ 修复 YouTube 下载器的代理设置问题
+- ✅ 确保多平台下载器的代理设置正确传递
+
 ### v2.1.0 (2026-01-21)
 
 **功能更新**：自定义输出文件名和 Meta 文件生成
@@ -607,6 +648,261 @@ batch_download_videos/
 - 定期清理不需要的视频文件，节省磁盘空间
 - Cookie 文件包含敏感信息，请妥善保管
 
+## 高级功能
+
+### 任务队列管理
+
+任务队列管理功能允许用户控制下载任务的生命周期，支持暂停、恢复和取消操作。
+
+#### 任务状态
+
+| 状态 | 描述 |
+|------|------|
+| `pending` | 任务已创建，等待执行 |
+| `downloading` | 任务正在执行中 |
+| `paused` | 任务已暂停，可恢复 |
+| `completed` | 任务执行完成 |
+| `canceled` | 任务已取消 |
+
+#### 使用方法
+
+任务队列管理功能通过 `TaskManager` 实现，在程序运行过程中，用户可以通过以下方式控制任务：
+
+1. **暂停任务**：当任务正在下载时，可以暂停该任务
+2. **恢复任务**：当任务被暂停后，可以恢复该任务的执行
+3. **取消任务**：可以取消正在执行或等待执行的任务
+
+#### 状态持久化
+
+任务状态会在执行过程中自动持久化到文件中，程序重启后会恢复之前的任务状态。
+
+### 文件命名模板选项
+
+文件命名模板功能允许用户自定义下载文件的命名规则，支持多种变量占位符。
+
+#### 支持的变量
+
+| 变量 | 描述 | 示例 |
+|------|------|------|
+| `%(title)s` | 视频标题 | `Example Video` |
+| `%(id)s` | 视频ID | `dQw4w9WgXcQ` |
+| `%(upload_date)s` | 上传日期 | `20230101` |
+| `%(ext)s` | 文件扩展名 | `mp4` |
+| `%(resolution)s` | 视频分辨率 | `720p` |
+| `%(author)s` | 视频作者 | `Example Channel` |
+| `%(date)s` | 当前日期 | `20240101` |
+
+#### 示例模板
+
+```
+# 日期 + 标题
+%(upload_date)s_%(title)s.%(ext)s
+
+# ID + 标题
+%(id)s_%(title)s.%(ext)s
+
+# 作者 + 标题
+%(author)s_%(title)s.%(ext)s
+
+# 分辨率 + 标题
+%(resolution)s_%(title)s.%(ext)s
+```
+
+#### 长度限制
+
+文件名长度会受到 `filename_max_length` 配置项的限制，默认为 200 个字符。超过限制的文件名会被自动截断。
+
+### 代理支持
+
+代理支持功能允许用户在不同网络环境下通过代理服务器进行下载，提高下载成功率。
+
+#### 配置方法
+
+在配置文件中设置 `proxy` 字段：
+
+```json
+{
+  "proxy": "http://127.0.0.1:7890"
+}
+```
+
+#### 支持的代理类型
+
+- **HTTP 代理**：`http://proxy.example.com:8080`
+- **HTTPS 代理**：`https://proxy.example.com:8443`
+
+#### 工作原理
+
+- **YouTube 专用下载器**：通过设置 `http.Client` 的 `Transport` 字段来使用代理
+- **多平台下载器**：通过传递 `--proxy` 参数给 yt-dlp 来使用代理
+
+### 智能重试机制
+
+智能重试机制采用指数退避策略，在下载失败时自动重试，提高下载成功率。
+
+#### 重试策略
+
+1. **基础延迟**：由 `base_retry_delay` 配置项指定，默认为 2 秒
+2. **指数退避**：每次重试的延迟时间会翻倍
+3. **最大重试次数**：由 `max_retries` 配置项指定，默认为 3 次
+
+#### 重试场景
+
+- 网络连接失败
+- 服务器响应错误
+- 下载超时
+- 其他临时错误
+
+## API 参考
+
+### 核心接口
+
+#### Downloader 接口
+
+```go
+// Downloader 定义了下载器的通用接口
+type Downloader interface {
+    // Download 下载指定 URL 的视频
+    // url: 视频 URL
+    // resolution: 目标分辨率
+    // outputDir: 输出目录
+    // 返回值: 下载结果和错误
+    Download(url string, resolution string, outputDir string) (*DownloadResult, error)
+    
+    // GetName 获取下载器名称
+    // 返回值: 下载器名称
+    GetName() string
+}
+```
+
+#### TaskManager 接口
+
+```go
+// TaskManager 定义了任务管理的接口
+type TaskManager interface {
+    // AddTask 添加下载任务
+    // url: 视频 URL
+    // resolution: 目标分辨率
+    // outputDir: 输出目录
+    // 返回值: 任务 ID 和错误
+    AddTask(url string, resolution string, outputDir string) (string, error)
+    
+    // PauseTask 暂停指定任务
+    // taskID: 任务 ID
+    // 返回值: 错误
+    PauseTask(taskID string) error
+    
+    // ResumeTask 恢复指定任务
+    // taskID: 任务 ID
+    // 返回值: 错误
+    ResumeTask(taskID string) error
+    
+    // CancelTask 取消指定任务
+    // taskID: 任务 ID
+    // 返回值: 错误
+    CancelTask(taskID string) error
+    
+    // GetTaskStatus 获取指定任务的状态
+    // taskID: 任务 ID
+    // 返回值: 任务状态和错误
+    GetTaskStatus(taskID string) (TaskStatus, error)
+    
+    // Start 开始执行任务队列
+    // 返回值: 错误
+    Start() error
+}
+```
+
+### 具体实现
+
+#### YouTubeDownloader
+
+```go
+// YouTubeDownloader YouTube 专用下载器
+type YouTubeDownloader struct {
+    client     *youtube.Client
+    config     *config.Config
+    indexer    *indexer.Indexer
+    outputDir  string
+}
+
+// NewYouTubeDownloader 创建新的 YouTube 下载器
+// cfg: 配置对象
+// idx: 索引器对象
+// 返回值: YouTubeDownloader 实例
+func NewYouTubeDownloader(cfg *config.Config, idx *indexer.Indexer) *YouTubeDownloader
+
+// Download 下载 YouTube 视频
+// url: 视频 URL
+// resolution: 目标分辨率
+// outputDir: 输出目录
+// 返回值: 下载结果和错误
+func (yd *YouTubeDownloader) Download(url string, resolution string, outputDir string) (*DownloadResult, error)
+```
+
+#### MultiPlatformDownloader
+
+```go
+// MultiPlatformDownloader 多平台下载器
+type MultiPlatformDownloader struct {
+    config    *config.Config
+    indexer   *indexer.Indexer
+    outputDir string
+}
+
+// NewMultiPlatformDownloader 创建新的多平台下载器
+// cfg: 配置对象
+// idx: 索引器对象
+// 返回值: MultiPlatformDownloader 实例
+func NewMultiPlatformDownloader(cfg *config.Config, idx *indexer.Indexer) *MultiPlatformDownloader
+
+// Download 下载多平台视频
+// url: 视频 URL
+// resolution: 目标分辨率
+// outputDir: 输出目录
+// 返回值: 下载结果和错误
+func (mpd *MultiPlatformDownloader) Download(url string, resolution string, outputDir string) (*DownloadResult, error)
+```
+
+### 配置管理
+
+#### Config 结构体
+
+```go
+// Config 应用配置结构体
+type Config struct {
+    BatchSize             int           `json:"batch_size"`
+    MaxConcurrency        int           `json:"max_concurrency"`
+    TimeoutPerVideo       time.Duration `json:"timeout_per_video"`
+    MaxRetries            int           `json:"max_retries"`
+    BaseRetryDelay        time.Duration `json:"base_retry_delay"`
+    DefaultOutputDir      string        `json:"default_output_dir"`
+    ResourceUrlsDir       string        `json:"resource_urls_dir"`
+    CookieFile            string        `json:"cookie_file"`
+    IndexFile             string        `json:"index_file"`
+    RecordFile            string        `json:"record_file"`
+    DefaultResolution     string        `json:"default_resolution"`
+    DefaultDownloader     string        `json:"default_downloader"`
+    OutputTemplate        string        `json:"output_template"`
+    FilenameMaxLength     int           `json:"filename_max_length"`
+    GenerateMetaFile      bool          `json:"generate_meta_file"`
+    RecodeVideo           string        `json:"recode_video"`
+    MaxConcurrentDownloads int          `json:"max_concurrent_downloads"`
+    Proxy                 string        `json:"proxy"`
+    LimitRate             string        `json:"limit_rate"`
+}
+
+// LoadConfig 从文件加载配置
+// filePath: 配置文件路径
+// 返回值: 配置对象和错误
+func LoadConfig(filePath string) (*Config, error)
+
+// SaveConfig 保存配置到文件
+// filePath: 配置文件路径
+// 返回值: 错误
+func (c *Config) SaveConfig(filePath string) error
+```
+
 ## 技术支持
 
 如有问题或建议，请：
@@ -617,7 +913,7 @@ batch_download_videos/
 
 ---
 
-**项目版本**：v2.1.0（新增功能）
-**最后更新**：2026-01-21
+**项目版本**：v2.4.0（完整功能）
+**最后更新**：2026-01-23
 **Go 版本**：1.25.0
 **许可证**：MIT

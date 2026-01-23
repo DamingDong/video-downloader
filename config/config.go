@@ -15,18 +15,20 @@ type Config struct {
 	MaxRetries             int           `json:"max_retries"`
 	BaseRetryDelay         time.Duration `json:"base_retry_delay"`
 	DefaultOutputDir       string        `json:"default_output_dir"`
-	ResourceURLsDir        string        `json:"resource_urls_dir"`
+	ResourceUrlsDir        string        `json:"resource_urls_dir"`
 	CookieFile             string        `json:"cookie_file"`
 	IndexFile              string        `json:"index_file"`
 	RecordFile             string        `json:"record_file"`
 	DefaultResolution      string        `json:"default_resolution"`
 	DefaultDownloader      string        `json:"default_downloader"`
-	OutputTemplate         string        `json:"output_template"`
 	GenerateMetaFile       bool          `json:"generate_meta_file"`
+	OutputTemplate         string        `json:"output_template"`
+	FilenameMaxLength      int           `json:"filename_max_length"`
 	RecodeVideo            string        `json:"recode_video"`
 	MaxConcurrentDownloads int           `json:"max_concurrent_downloads"`
 	Proxy                  string        `json:"proxy"`
 	LimitRate              string        `json:"limit_rate"`
+	FfmpegPath             string        `json:"ffmpeg_path"`
 }
 
 // ConfigJSON 用于JSON序列化和反序列化的辅助结构体
@@ -37,18 +39,20 @@ type ConfigJSON struct {
 	MaxRetries             int    `json:"max_retries"`
 	BaseRetryDelay         string `json:"base_retry_delay"`
 	DefaultOutputDir       string `json:"default_output_dir"`
-	ResourceURLsDir        string `json:"resource_urls_dir"`
+	ResourceUrlsDir        string `json:"resource_urls_dir"`
 	CookieFile             string `json:"cookie_file"`
 	IndexFile              string `json:"index_file"`
 	RecordFile             string `json:"record_file"`
 	DefaultResolution      string `json:"default_resolution"`
 	DefaultDownloader      string `json:"default_downloader"`
-	OutputTemplate         string `json:"output_template"`
 	GenerateMetaFile       bool   `json:"generate_meta_file"`
+	OutputTemplate         string `json:"output_template"`
+	FilenameMaxLength      int    `json:"filename_max_length"`
 	RecodeVideo            string `json:"recode_video"`
 	MaxConcurrentDownloads int    `json:"max_concurrent_downloads"`
 	Proxy                  string `json:"proxy"`
 	LimitRate              string `json:"limit_rate"`
+	FfmpegPath             string `json:"ffmpeg_path"`
 }
 
 // UnmarshalJSON 实现自定义JSON反序列化方法
@@ -63,32 +67,34 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 	c.MaxConcurrency = jsonCfg.MaxConcurrency
 	c.MaxRetries = jsonCfg.MaxRetries
 	c.DefaultOutputDir = jsonCfg.DefaultOutputDir
-	c.ResourceURLsDir = jsonCfg.ResourceURLsDir
+	c.ResourceUrlsDir = jsonCfg.ResourceUrlsDir
 	c.CookieFile = jsonCfg.CookieFile
 	c.IndexFile = jsonCfg.IndexFile
 	c.RecordFile = jsonCfg.RecordFile
 	c.DefaultResolution = jsonCfg.DefaultResolution
 	c.DefaultDownloader = jsonCfg.DefaultDownloader
 	c.OutputTemplate = jsonCfg.OutputTemplate
+	c.FilenameMaxLength = jsonCfg.FilenameMaxLength
 	c.GenerateMetaFile = jsonCfg.GenerateMetaFile
 	c.RecodeVideo = jsonCfg.RecodeVideo
 	c.MaxConcurrentDownloads = jsonCfg.MaxConcurrentDownloads
 	c.Proxy = jsonCfg.Proxy
 	c.LimitRate = jsonCfg.LimitRate
+	c.FfmpegPath = jsonCfg.FfmpegPath
 
 	// 解析时间字段
 	var err error
 	if jsonCfg.TimeoutPerVideo != "" {
 		c.TimeoutPerVideo, err = time.ParseDuration(jsonCfg.TimeoutPerVideo)
 		if err != nil {
-			return fmt.Errorf("解析timeout_per_video失败: %w", err)
+			return fmt.Errorf("解析TimeoutPerVideo失败: %w", err)
 		}
 	}
 
 	if jsonCfg.BaseRetryDelay != "" {
 		c.BaseRetryDelay, err = time.ParseDuration(jsonCfg.BaseRetryDelay)
 		if err != nil {
-			return fmt.Errorf("解析base_retry_delay失败: %w", err)
+			return fmt.Errorf("解析BaseRetryDelay失败: %w", err)
 		}
 	}
 
@@ -104,18 +110,20 @@ func (c *Config) MarshalJSON() ([]byte, error) {
 		MaxRetries:             c.MaxRetries,
 		BaseRetryDelay:         c.BaseRetryDelay.String(),
 		DefaultOutputDir:       c.DefaultOutputDir,
-		ResourceURLsDir:        c.ResourceURLsDir,
+		ResourceUrlsDir:        c.ResourceUrlsDir,
 		CookieFile:             c.CookieFile,
 		IndexFile:              c.IndexFile,
 		RecordFile:             c.RecordFile,
 		DefaultResolution:      c.DefaultResolution,
 		DefaultDownloader:      c.DefaultDownloader,
 		OutputTemplate:         c.OutputTemplate,
+		FilenameMaxLength:      c.FilenameMaxLength,
 		GenerateMetaFile:       c.GenerateMetaFile,
 		RecodeVideo:            c.RecodeVideo,
 		MaxConcurrentDownloads: c.MaxConcurrentDownloads,
 		Proxy:                  c.Proxy,
 		LimitRate:              c.LimitRate,
+		FfmpegPath:             c.FfmpegPath,
 	}
 
 	return json.MarshalIndent(jsonCfg, "", "  ")
@@ -129,18 +137,20 @@ func DefaultConfig() *Config {
 		MaxRetries:             3,
 		BaseRetryDelay:         2 * time.Second,
 		DefaultOutputDir:       "Output",
-		ResourceURLsDir:        "resource_urls",
+		ResourceUrlsDir:        "resource_urls",
 		CookieFile:             "cookies.txt",
 		IndexFile:              ".video_downloaded.index",
 		RecordFile:             "下载记录.md",
 		DefaultResolution:      "720",
 		DefaultDownloader:      "auto",
-		OutputTemplate:         "%(upload_date)s_%(title)s.%(ext)s",
 		GenerateMetaFile:       true,
-		RecodeVideo:            "mp4",
+		OutputTemplate:         "%(title)s.%(ext)s",
+		FilenameMaxLength:      0,
+		RecodeVideo:            "",
 		MaxConcurrentDownloads: 3,
 		Proxy:                  "",
 		LimitRate:              "",
+		FfmpegPath:             "",
 	}
 }
 
@@ -152,6 +162,10 @@ func LoadConfig(configPath string) (*Config, error) {
 	}
 
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+		// 配置文件不存在，保存默认配置到文件
+		if err := cfg.SaveConfig(configPath); err != nil {
+			return nil, fmt.Errorf("保存默认配置文件失败: %w", err)
+		}
 		return cfg, nil
 	}
 
@@ -189,8 +203,10 @@ func (c *Config) SaveConfig(configPath string) error {
 }
 
 func (c *Config) GetOutputDir(baseDir string) string {
-	if baseDir == "" {
-		baseDir = c.ResourceURLsDir
+	// 如果提供了 baseDir，使用它作为基础目录
+	// 否则直接返回默认输出目录
+	if baseDir != "" {
+		return baseDir
 	}
-	return baseDir + "/" + c.DefaultOutputDir
+	return c.DefaultOutputDir
 }

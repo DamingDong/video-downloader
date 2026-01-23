@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -17,6 +18,22 @@ import (
 	"batch_download_videos/logger"
 	"batch_download_videos/utils"
 )
+
+// min 返回两个整数中的较小值
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// max 返回两个整数中的较大值
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
 
 func main() {
 	resolution := flag.String("r", "", "视频分辨率 (360/480/720/1080)")
@@ -62,7 +79,7 @@ func main() {
 	logger.GetLogger().Info("使用分辨率: %sp", cfg.DefaultResolution)
 	logger.GetLogger().Info("使用下载器: %s", cfg.DefaultDownloader)
 
-	outputDir := "Output"
+	outputDir := cfg.DefaultOutputDir
 	if err := utils.EnsureDir(outputDir); err != nil {
 		logger.GetLogger().Error("创建输出目录失败: %v", err)
 		return
@@ -100,12 +117,12 @@ func main() {
 	}
 
 	if *filePath != "" {
-		if err := processFromFile(*filePath, cfg.DefaultResolution, dl, idx, cfg.MaxConcurrency); err != nil {
+		if err := processFromFile(*filePath, cfg.DefaultResolution, outputDir, dl, idx, cfg.MaxConcurrency); err != nil {
 			logger.GetLogger().Error("处理文件失败: %v", err)
 			return
 		}
 	} else {
-		if err := processFromDirectory(cfg.DefaultResolution, dl, idx, cfg.MaxConcurrency); err != nil {
+		if err := processFromDirectory(cfg.DefaultResolution, outputDir, dl, idx, cfg.MaxConcurrency); err != nil {
 			logger.GetLogger().Error("扫描目录失败: %v", err)
 			return
 		}
@@ -137,7 +154,7 @@ func parseLogLevel(level string) logger.LogLevel {
 	}
 }
 
-func processFromFile(filePath, resolution string, dl downloader.Downloader, idx *indexer.Indexer, maxConcurrency int) error {
+func processFromFile(filePath, resolution, outputDir string, dl downloader.Downloader, idx *indexer.Indexer, maxConcurrency int) error {
 	file, err := os.Open(filePath)
 	if err != nil {
 		return fmt.Errorf("打开文件失败: %w", err)
@@ -160,10 +177,10 @@ func processFromFile(filePath, resolution string, dl downloader.Downloader, idx 
 
 	logger.GetLogger().Info("开始处理文件: %s (共 %d 个URL)", filePath, len(urls))
 
-	return processURLs(urls, resolution, dl, maxConcurrency)
+	return processURLs(urls, resolution, outputDir, dl, maxConcurrency)
 }
 
-func processFromDirectory(resolution string, dl downloader.Downloader, idx *indexer.Indexer, maxConcurrency int) error {
+func processFromDirectory(resolution, outputDir string, dl downloader.Downloader, idx *indexer.Indexer, maxConcurrency int) error {
 	logger.GetLogger().Info("开始扫描 %s 目录...", "resource_urls")
 
 	entries, err := os.ReadDir("resource_urls")
@@ -190,7 +207,7 @@ func processFromDirectory(resolution string, dl downloader.Downloader, idx *inde
 	logger.GetLogger().Info("找到 %d 个 URL 文件", len(urlFiles))
 
 	for _, file := range urlFiles {
-		if err := processFromFile(file, resolution, dl, idx, maxConcurrency); err != nil {
+		if err := processFromFile(file, resolution, outputDir, dl, idx, maxConcurrency); err != nil {
 			logger.GetLogger().Error("处理文件 %s 失败: %v", file, err)
 		}
 	}
@@ -198,12 +215,20 @@ func processFromDirectory(resolution string, dl downloader.Downloader, idx *inde
 	return nil
 }
 
-func processURLs(urls []string, resolution string, dl downloader.Downloader, maxConcurrency int) error {
+func processURLs(urls []string, resolution, outputDir string, dl downloader.Downloader, maxConcurrency int) error {
 	if maxConcurrency <= 0 {
 		maxConcurrency = 3
 	}
 
-	semaphore := make(chan struct{}, maxConcurrency)
+	// 动态并发控制：根据系统CPU核心数和网络状况调整
+	// 获取CPU核心数
+	cpuCount := runtime.NumCPU()
+	// 确保并发数不超过CPU核心数的2倍，避免系统过载
+	recommendedConcurrency := min(cpuCount*2, maxConcurrency)
+	// 但至少保持2个并发，确保下载效率
+	recommendedConcurrency = max(recommendedConcurrency, 2)
+
+	semaphore := make(chan struct{}, recommendedConcurrency)
 	var wg sync.WaitGroup
 	var errMutex sync.Mutex
 	var batchErr error
@@ -211,7 +236,8 @@ func processURLs(urls []string, resolution string, dl downloader.Downloader, max
 	failCount := 0
 	skipCount := 0
 
-	logger.GetLogger().BatchStart(len(urls), maxConcurrency)
+	logger.GetLogger().BatchStart(len(urls), recommendedConcurrency)
+	logger.GetLogger().Info("使用动态并发控制，并发数: %d (基于CPU核心数: %d)", recommendedConcurrency, cpuCount)
 
 	for i, url := range urls {
 		wg.Add(1)
@@ -219,11 +245,15 @@ func processURLs(urls []string, resolution string, dl downloader.Downloader, max
 
 		go func(url string, idx int) {
 			defer wg.Done()
-			defer func() { <-semaphore }()
+			defer func() {
+				// 释放信号量时添加短暂延迟，避免瞬间启动过多下载导致网络拥塞
+				time.Sleep(100 * time.Millisecond)
+				<-semaphore
+			}()
 
 			logger.GetLogger().Debug("[%d/%d] 开始下载: %s", idx+1, len(urls), url)
 
-			result, err := dl.Download(url, "Output", resolution)
+			result, err := dl.Download(url, outputDir, resolution)
 			if err != nil {
 				errMutex.Lock()
 				failCount++

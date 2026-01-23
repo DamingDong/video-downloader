@@ -1,7 +1,6 @@
 package downloader
 
 import (
-	"net/url"
 	"strings"
 )
 
@@ -36,11 +35,16 @@ func (sd *SmartDownloader) Download(urlStr, outputDir, resolution string) (*Down
 }
 
 func (sd *SmartDownloader) IsDownloaded(videoID string) bool {
-	return sd.youtubeDownloader.IsDownloaded(videoID)
+	// 对于智能下载器，我们需要同时检查两个下载器的索引
+	return sd.youtubeDownloader.IsDownloaded(videoID) || sd.multiDownloader.IsDownloaded(videoID)
 }
 
 func (sd *SmartDownloader) MarkDownloaded(videoID string) error {
-	return sd.youtubeDownloader.MarkDownloaded(videoID)
+	// 对于智能下载器，我们需要同时标记两个下载器的索引
+	if err := sd.youtubeDownloader.MarkDownloaded(videoID); err != nil {
+		return err
+	}
+	return sd.multiDownloader.MarkDownloaded(videoID)
 }
 
 func (sd *SmartDownloader) CheckYTDLP() error {
@@ -48,16 +52,22 @@ func (sd *SmartDownloader) CheckYTDLP() error {
 }
 
 func (sd *SmartDownloader) selectDownloader(urlStr string) Downloader {
-	parsedURL, err := url.Parse(urlStr)
-	if err != nil {
-		return sd.multiDownloader
-	}
+	// 检查是否为 YouTube URL
+	if strings.Contains(urlStr, "youtube.com") || strings.Contains(urlStr, "youtu.be") {
+		// 检查是否为播放列表：包含 list 参数
+		if strings.Contains(urlStr, "list=") {
+			return sd.multiDownloader
+		}
 
-	host := parsedURL.Hostname()
+		// 检查是否为频道
+		if strings.Contains(urlStr, "/channel/") || strings.Contains(urlStr, "/c/") || strings.Contains(urlStr, "/user/") {
+			return sd.multiDownloader
+		}
 
-	if strings.Contains(host, "youtube.com") || strings.Contains(host, "youtu.be") {
+		// 单个视频：使用 YouTube 专用下载器
 		return sd.youtubeDownloader
 	}
 
+	// 非 YouTube URL：使用多平台下载器
 	return sd.multiDownloader
 }

@@ -5,11 +5,16 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
+	"math/rand"
+	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/kkdai/youtube/v2"
 	"github.com/vbauerster/mpb/v5"
@@ -29,6 +34,30 @@ type YouTubeDownloader struct {
 
 func NewYouTubeDownloader(cfg *config.Config, idx *indexer.Indexer) *YouTubeDownloader {
 	client := youtube.Client{}
+
+	// 初始化随机数生成器
+	rand.Seed(time.Now().UnixNano())
+
+	// 设置代理
+	if cfg.Proxy != "" {
+		// 为 youtube.Client 设置代理
+		// 注意：这里假设 youtube.Client 有一个 HTTPClient 字段，用于自定义 HTTP 客户端
+		// 如果该字段不存在，可能需要修改底层库或使用其他方法设置代理
+		// 由于无法直接查看外部库的代码，这里使用常见的实现方式
+		client.HTTPClient = &http.Client{
+			Transport: &http.Transport{
+				Proxy: http.ProxyURL(func() *url.URL {
+					proxyURL, err := url.Parse(cfg.Proxy)
+					if err != nil {
+						log.Printf("代理URL解析失败: %v，将不使用代理", err)
+						return nil
+					}
+					return proxyURL
+				}()),
+			},
+		}
+		log.Printf("已设置代理: %s", cfg.Proxy)
+	}
 
 	return &YouTubeDownloader{
 		client:    &client,
@@ -109,11 +138,30 @@ func (ytd *YouTubeDownloader) Download(url, outputDir, resolution string) (*Down
 	log.Printf("开始下载: %s (ID: %s)", video.Title, video.ID)
 
 	var lastErr error
+	maxDelay := 30 * time.Second // 最大延迟上限
+
 	for retry := 0; retry < ytd.config.MaxRetries; retry++ {
 		if retry > 0 {
-			delay := ytd.config.BaseRetryDelay * time.Duration(retry)
-			log.Printf("重试 %d/%d，等待 %v 后重试...", retry, ytd.config.MaxRetries, delay)
-			time.Sleep(delay)
+			// 指数退避算法：基础延迟 * (2^重试次数)
+			baseDelay := ytd.config.BaseRetryDelay
+			exponentialDelay := baseDelay * time.Duration(math.Pow(2, float64(retry-1)))
+
+			// 添加随机抖动 (±20%)，避免多个请求同时重试导致的网络拥塞
+			jitter := time.Duration(float64(exponentialDelay) * 0.2 * (2*rand.Float64() - 1))
+			totalDelay := exponentialDelay + jitter
+
+			// 确保延迟不超过最大值
+			if totalDelay > maxDelay {
+				totalDelay = maxDelay
+			}
+
+			// 确保延迟为正值
+			if totalDelay < 0 {
+				totalDelay = 0
+			}
+
+			log.Printf("重试 %d/%d，等待 %v 后重试...", retry, ytd.config.MaxRetries, totalDelay)
+			time.Sleep(totalDelay)
 		}
 
 		err := ytd.downloadVideo(ctx, video, filename, outputDir, resolution)
@@ -176,7 +224,12 @@ func (ytd *YouTubeDownloader) MarkDownloaded(videoID string) error {
 }
 
 func (ytd *YouTubeDownloader) downloadVideo(ctx context.Context, video *youtube.Video, filename, outputDir, resolution string) error {
-	p := mpb.New(mpb.WithWidth(60), mpb.WithRefreshRate(180*time.Millisecond))
+	// 创建进度条管理器，设置更高的刷新率
+	p := mpb.New(
+		mpb.WithWidth(80), // 增加进度条宽度
+		mpb.WithRefreshRate(100*time.Millisecond), // 提高刷新率，使进度更实时
+		mpb.WithOutput(os.Stderr),                 // 将进度条输出到标准错误
+	)
 
 	format := ytd.selectBestFormat(video, resolution)
 	if format == nil {
@@ -188,21 +241,29 @@ func (ytd *YouTubeDownloader) downloadVideo(ctx context.Context, video *youtube.
 		totalBytes = 100 * 1024 * 1024
 	}
 
+	// 创建进度条，添加更多装饰器
 	bar := p.AddBar(totalBytes,
 		mpb.PrependDecorators(
-			decor.Name(fmt.Sprintf("%-30s", utils.TruncateString(video.Title, 30))),
+			decor.Name(fmt.Sprintf("%-40s", utils.TruncateString(video.Title, 40)), decor.WCSyncSpace),
 			decor.CountersKiloByte("% .2f / % .2f"),
+			decor.Name(" | "),
+			decor.AverageSpeed(decor.UnitKiB, "% .2f"),
 		),
 		mpb.AppendDecorators(
 			decor.Percentage(decor.WCSyncSpace),
 			decor.Name(" ["),
-			decor.EwmaETA(decor.ET_STYLE_GO, 90),
+			decor.EwmaETA(decor.ET_STYLE_GO, 60), // 使用更快的EWMA窗口，使ETA更准确
 			decor.Name("]"),
 		),
 	)
 
+	// 记录开始下载的日志
+	log.Printf("开始下载视频: %s (ID: %s, 分辨率: %s, 格式: %s)",
+		video.Title, video.ID, resolution, format.MimeType)
+
 	stream, size, err := ytd.client.GetStreamContext(ctx, video, format)
 	if err != nil {
+		log.Printf("获取视频流失败: %v", err)
 		return fmt.Errorf("获取视频流失败: %w", err)
 	}
 	defer stream.Close()
@@ -210,64 +271,145 @@ func (ytd *YouTubeDownloader) downloadVideo(ctx context.Context, video *youtube.
 	outputPath := filepath.Join(outputDir, filename)
 	file, err := os.Create(outputPath)
 	if err != nil {
+		log.Printf("创建文件失败: %v", err)
 		return fmt.Errorf("创建文件失败: %w", err)
 	}
 	defer file.Close()
+
+	// 记录文件创建成功的日志
+	log.Printf("创建输出文件: %s", outputPath)
+
+	// 上次记录进度的时间和字节数
+	lastLogTime := time.Now()
+	lastLogBytes := int64(0)
+	logInterval := 5 * time.Second // 日志记录间隔
 
 	reader := &ProgressReader{
 		Reader: stream,
 		Total:  size,
 		OnProgress: func(current, total int64) {
+			// 更新进度条
 			bar.SetCurrent(current)
+
+			// 定期记录进度日志
+			currentTime := time.Now()
+			if currentTime.Sub(lastLogTime) >= logInterval {
+				downloaded := current - lastLogBytes
+				speed := float64(downloaded) / currentTime.Sub(lastLogTime).Seconds() / 1024 / 1024 // MB/s
+				progress := float64(current) / float64(total) * 100
+
+				log.Printf("下载进度: %s - %.2f%% (%.2f MB/%.2f MB, %.2f MB/s)",
+					utils.TruncateString(video.Title, 30),
+					progress,
+					float64(current)/1024/1024,
+					float64(total)/1024/1024,
+					speed)
+
+				lastLogTime = currentTime
+				lastLogBytes = current
+			}
 		},
 	}
 
+	// 开始下载
+	log.Printf("开始读取视频流，总大小: %.2f MB", float64(size)/1024/1024)
+
 	if _, err := io.Copy(file, reader); err != nil {
+		log.Printf("下载失败: %v", err)
 		return fmt.Errorf("下载失败: %w", err)
 	}
 
+	// 完成进度条
 	bar.SetTotal(totalBytes, true)
 	p.Wait()
+
+	// 记录下载完成的日志
+	log.Printf("视频下载完成: %s (ID: %s, 保存路径: %s)",
+		video.Title, video.ID, outputPath)
 
 	return nil
 }
 
 func (ytd *YouTubeDownloader) selectBestFormat(video *youtube.Video, resolution string) *youtube.Format {
+	// 解析目标分辨率
 	targetHeight := 720
-	switch resolution {
-	case "1080":
-		targetHeight = 1080
-	case "720":
-		targetHeight = 720
-	case "480":
-		targetHeight = 480
-	case "360":
-		targetHeight = 360
+	resolutionMap := map[string]int{
+		"2160": 2160, // 4K
+		"1440": 1440, // 2K
+		"1080": 1080, // Full HD
+		"720":  720,  // HD
+		"480":  480,  // SD
+		"360":  360,  // Low SD
+		"240":  240,  // Very Low
+		"144":  144,  // Lowest
 	}
 
-	var bestFormat *youtube.Format
-	minDiff := int(^uint(0) >> 1)
+	if h, ok := resolutionMap[resolution]; ok {
+		targetHeight = h
+	}
 
-	for _, format := range video.Formats {
+	// 按分辨率和质量排序格式
+	formats := make([]*youtube.Format, 0, len(video.Formats))
+	for i := range video.Formats {
+		format := &video.Formats[i]
+		// 只考虑包含音频的格式
 		if format.AudioChannels == 0 {
 			continue
 		}
-
-		height := format.Height
-		if height == 0 {
+		// 确保高度有效
+		if format.Height == 0 {
 			continue
 		}
+		formats = append(formats, format)
+	}
 
-		diff := height - targetHeight
-		if diff < 0 {
-			diff = -diff
+	// 如果没有找到合适的格式，返回nil
+	if len(formats) == 0 {
+		return nil
+	}
+
+	// 计算每个格式的得分
+	type formatScore struct {
+		format *youtube.Format
+		score  int
+	}
+
+	var scoredFormats []formatScore
+	for _, format := range formats {
+		// 计算分辨率差异
+		heightDiff := format.Height - targetHeight
+		if heightDiff < 0 {
+			heightDiff = -heightDiff
 		}
 
-		if diff < minDiff {
-			minDiff = diff
-			bestFormat = &format
+		// 计算比特率得分（越高越好）
+		bitrateScore := int(format.Bitrate / 1000) // 转换为kbps
+
+		// 计算总得分：分辨率差异越小越好，比特率越高越好
+		totalScore := bitrateScore - heightDiff*10
+
+		scoredFormats = append(scoredFormats, formatScore{
+			format: format,
+			score:  totalScore,
+		})
+	}
+
+	// 按得分排序，选择得分最高的格式
+	bestFormat := scoredFormats[0].format
+	bestScore := scoredFormats[0].score
+
+	for _, sf := range scoredFormats {
+		if sf.score > bestScore {
+			bestScore = sf.score
+			bestFormat = sf.format
 		}
 	}
+
+	log.Printf("为视频 '%s' 选择最佳格式: 分辨率=%dp, 比特率=%dkbps, 格式=%s",
+		utils.TruncateString(video.Title, 30),
+		bestFormat.Height,
+		bestFormat.Bitrate/1000,
+		bestFormat.MimeType)
 
 	return bestFormat
 }
@@ -284,17 +426,67 @@ func (ytd *YouTubeDownloader) generateFilename(video *youtube.Video, ext string)
 	result := template
 
 	// 替换标题
-	result = strings.ReplaceAll(result, "%(title)s", utils.SanitizeFilename(video.Title))
+	title := utils.SanitizeFilename(video.Title)
+	// 应用文件名最大长度限制
+	if ytd.config.FilenameMaxLength > 0 && len(title) > ytd.config.FilenameMaxLength {
+		title = utils.TruncateString(title, ytd.config.FilenameMaxLength)
+	}
+	result = strings.ReplaceAll(result, "%(title)s", title)
 
 	// 替换ID
 	result = strings.ReplaceAll(result, "%(id)s", video.ID)
 
+	// 替换作者
+	author := utils.SanitizeFilename(video.Author)
+	result = strings.ReplaceAll(result, "%(author)s", author)
+	result = strings.ReplaceAll(result, "%(uploader)s", author)
+
+	// 替换分辨率
+	resolution := ""
+	if video.Formats != nil && len(video.Formats) > 0 {
+		bestFormat := ytd.selectBestFormat(video, ytd.config.DefaultResolution)
+		if bestFormat != nil {
+			resolution = fmt.Sprintf("%dp", bestFormat.Height)
+			result = strings.ReplaceAll(result, "%(width)s", fmt.Sprintf("%d", bestFormat.Width))
+			result = strings.ReplaceAll(result, "%(height)s", fmt.Sprintf("%d", bestFormat.Height))
+		}
+	}
+	result = strings.ReplaceAll(result, "%(resolution)s", resolution)
+
+	// 替换时长
+	duration := fmt.Sprintf("%d", video.Duration)
+	result = strings.ReplaceAll(result, "%(duration)s", duration)
+
 	// 替换上传日期（使用当前日期作为替代）
-	currentDate := time.Now().Format("20060102")
-	result = strings.ReplaceAll(result, "%(upload_date)s", currentDate)
+	currentDate := time.Now()
+	uploadDate := currentDate.Format("20060102")
+	result = strings.ReplaceAll(result, "%(upload_date)s", uploadDate)
+
+	// 替换下载日期和时间
+	date := currentDate.Format("20060102")
+	timeStr := currentDate.Format("150405")
+	timestamp := currentDate.Format("20060102_150405")
+	year := currentDate.Format("2006")
+	month := currentDate.Format("01")
+	day := currentDate.Format("02")
+
+	result = strings.ReplaceAll(result, "%(date)s", date)
+	result = strings.ReplaceAll(result, "%(time)s", timeStr)
+	result = strings.ReplaceAll(result, "%(timestamp)s", timestamp)
+	result = strings.ReplaceAll(result, "%(year)s", year)
+	result = strings.ReplaceAll(result, "%(month)s", month)
+	result = strings.ReplaceAll(result, "%(day)s", day)
 
 	// 替换扩展名
 	result = strings.ReplaceAll(result, "%(ext)s", strings.TrimPrefix(ext, "."))
+
+	// 清理重复的下划线和点
+	for strings.Contains(result, "__") {
+		result = strings.ReplaceAll(result, "__", "_")
+	}
+	for strings.Contains(result, "..") {
+		result = strings.ReplaceAll(result, "..", ".")
+	}
 
 	return result
 }
@@ -306,17 +498,65 @@ func (ytd *YouTubeDownloader) generateMetaFile(video *youtube.Video, outputDir, 
 	metaPath := filepath.Join(outputDir, metaFilename)
 
 	// 构建Meta文件内容
-	content := video.Title
+	var content strings.Builder
 
-	// 添加标签（如果有）
-	// 注意：github.com/kkdai/youtube/v2库可能不直接提供标签信息
-	// 这里我们使用视频标题中的关键词作为标签的替代
-	// 实际项目中可能需要使用其他方式获取标签信息
-	content += "\n"
-	content += "#视频 #YouTube"
+	// 添加标题
+	content.WriteString(fmt.Sprintf("标题: %s\n", video.Title))
+
+	// 添加作者
+	content.WriteString(fmt.Sprintf("作者: %s\n", video.Author))
+
+	// 添加视频ID
+	content.WriteString(fmt.Sprintf("视频ID: %s\n", video.ID))
+
+	// 添加视频URL
+	content.WriteString(fmt.Sprintf("视频URL: https://www.youtube.com/watch?v=%s\n", video.ID))
+
+	// 添加时长
+	duration := time.Duration(video.Duration * time.Second)
+	content.WriteString(fmt.Sprintf("时长: %s\n", duration))
+
+	// 添加上传日期（如果有）
+	// 注意：github.com/kkdai/youtube/v2库可能不直接提供上传日期
+	// 这里使用当前日期作为替代
+	content.WriteString(fmt.Sprintf("下载日期: %s\n", time.Now().Format("2006-01-02")))
+
+	// 添加分辨率信息
+	content.WriteString("分辨率: 自动选择最佳质量\n")
+
+	// 添加标签
+	content.WriteString("\n标签:\n")
+	content.WriteString("#视频 #YouTube #" + strings.ReplaceAll(strings.ToLower(video.Author), " ", "#"))
+
+	// 从标题中提取关键词作为标签
+	titleWords := strings.Fields(video.Title)
+	for _, word := range titleWords {
+		// 只添加长度大于2的单词作为标签
+		if len(word) > 2 {
+			// 移除标点符号
+			cleanWord := strings.Map(func(r rune) rune {
+				if unicode.IsLetter(r) || unicode.IsNumber(r) {
+					return r
+				}
+				return -1
+			}, word)
+			if len(cleanWord) > 2 {
+				content.WriteString(" #" + strings.ToLower(cleanWord))
+			}
+		}
+	}
+
+	// 添加空行
+	content.WriteString("\n\n")
+
+	// 添加描述
+	content.WriteString("描述:\n")
+	content.WriteString(fmt.Sprintf("这是从YouTube下载的视频：%s\n", video.Title))
+	content.WriteString(fmt.Sprintf("作者：%s\n", video.Author))
+	content.WriteString(fmt.Sprintf("视频ID：%s\n", video.ID))
 
 	// 写入Meta文件
-	if err := os.WriteFile(metaPath, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(metaPath, []byte(content.String()), 0644); err != nil {
 		return fmt.Errorf("写入Meta文件失败: %w", err)
 	}
 
@@ -326,11 +566,15 @@ func (ytd *YouTubeDownloader) generateMetaFile(video *youtube.Video, outputDir, 
 
 // convertVideoFormat 使用ffmpeg进行视频格式转换
 func (ytd *YouTubeDownloader) convertVideoFormat(inputPath, outputPath string) error {
-	// 尝试使用当前目录下的ffmpeg.exe
-	ffmpegPath := "./ffmpeg.exe"
-	if _, err := os.Stat(ffmpegPath); os.IsNotExist(err) {
-		// 如果当前目录不存在，则尝试使用系统PATH中的ffmpeg
-		ffmpegPath = "ffmpeg"
+	// 优先使用配置文件中的ffmpeg路径
+	ffmpegPath := ytd.config.FfmpegPath
+	if ffmpegPath == "" {
+		// 尝试使用当前目录下的ffmpeg.exe
+		ffmpegPath = "./ffmpeg.exe"
+		if _, err := os.Stat(ffmpegPath); os.IsNotExist(err) {
+			// 如果当前目录不存在，则尝试使用系统PATH中的ffmpeg
+			ffmpegPath = "ffmpeg"
+		}
 	}
 
 	// 构建ffmpeg命令
