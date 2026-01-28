@@ -4,6 +4,12 @@ batch_download
 batch_download_new
 batch_download.exe
 batch_download_videos.exe
+video-downloader.exe
+
+# 依赖项二进制文件
+deps/ffmpeg.exe
+yt-dlp.exe
+yt-dlp_new.exe
 
 # Cookie 文件（包含敏感信息）
 cookies.txt
