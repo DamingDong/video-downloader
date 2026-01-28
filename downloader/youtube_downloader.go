@@ -105,17 +105,24 @@ func (ytd *YouTubeDownloader) Download(url, outputDir, resolution string) (*Down
 	ctx, cancel := context.WithTimeout(context.Background(), ytd.config.TimeoutPerVideo)
 	defer cancel()
 
+	log.Printf("[YouTube下载器] 开始处理下载请求: %s", url)
+
 	videoID, err := youtube.ExtractVideoID(url)
 	if err != nil {
+		log.Printf("[YouTube下载器] 提取视频ID失败: %v", err)
 		return nil, fmt.Errorf("提取视频ID失败: %w", err)
 	}
+	log.Printf("[YouTube下载器] 提取到视频ID: %s", videoID)
 
 	video, err := ytd.client.GetVideoContext(ctx, videoID)
 	if err != nil {
+		log.Printf("[YouTube下载器] 获取视频信息失败: %v", err)
 		return nil, fmt.Errorf("获取视频失败: %w", err)
 	}
+	log.Printf("[YouTube下载器] 获取到视频信息: 标题='%s', 作者='%s', 时长=%d秒", video.Title, video.Author, int(video.Duration.Seconds()))
 
 	if ytd.indexer.IsDownloaded(video.ID) {
+		log.Printf("[YouTube下载器] 视频已下载，跳过: %s", video.Title)
 		return &DownloadResult{
 			Success:    false,
 			VideoID:    video.ID,
@@ -127,9 +134,21 @@ func (ytd *YouTubeDownloader) Download(url, outputDir, resolution string) (*Down
 		}, nil
 	}
 
+	// 获取平台特定的输出目录
+	platform := "youtube"
+	platformOutputDir := ytd.config.GetPlatformOutputDir(platform)
+	log.Printf("[YouTube下载器] 使用输出目录: %s", platformOutputDir)
+
+	// 确保平台输出目录存在
+	if err := os.MkdirAll(platformOutputDir, 0755); err != nil {
+		log.Printf("[YouTube下载器] 创建输出目录失败: %v", err)
+		return nil, fmt.Errorf("创建输出目录失败: %w", err)
+	}
+	log.Printf("[YouTube下载器] 输出目录已准备就绪: %s", platformOutputDir)
+
 	// 生成符合OutputTemplate的文件名
 	filename := ytd.generateFilename(video, ".mp4")
-	outputPath := filepath.Join(outputDir, filename)
+	outputPath := filepath.Join(platformOutputDir, filename)
 
 	if err := utils.CleanupZeroByteFiles(outputPath); err != nil {
 		log.Printf("清理0字节文件失败: %v", err)
@@ -164,7 +183,7 @@ func (ytd *YouTubeDownloader) Download(url, outputDir, resolution string) (*Down
 			time.Sleep(totalDelay)
 		}
 
-		err := ytd.downloadVideo(ctx, video, filename, outputDir, resolution)
+		err := ytd.downloadVideo(ctx, video, filename, platformOutputDir, resolution)
 		if err != nil {
 			lastErr = err
 			log.Printf("下载失败 (尝试 %d/%d): %v", retry+1, ytd.config.MaxRetries, err)
@@ -175,7 +194,7 @@ func (ytd *YouTubeDownloader) Download(url, outputDir, resolution string) (*Down
 
 		// 处理Meta文件的生成
 		if ytd.config.GenerateMetaFile {
-			if err := ytd.generateMetaFile(video, outputDir, filename); err != nil {
+			if err := ytd.generateMetaFile(video, platformOutputDir, filename); err != nil {
 				log.Printf("生成Meta文件失败: %v", err)
 			}
 		}
@@ -183,7 +202,7 @@ func (ytd *YouTubeDownloader) Download(url, outputDir, resolution string) (*Down
 		// 处理视频格式转换
 		if ytd.config.RecodeVideo != "" {
 			newFilename := strings.TrimSuffix(filename, filepath.Ext(filename)) + "." + ytd.config.RecodeVideo
-			newOutputPath := filepath.Join(outputDir, newFilename)
+			newOutputPath := filepath.Join(platformOutputDir, newFilename)
 			if err := ytd.convertVideoFormat(outputPath, newOutputPath); err != nil {
 				log.Printf("视频格式转换失败: %v", err)
 			} else {
@@ -419,19 +438,38 @@ func (ytd *YouTubeDownloader) generateFilename(video *youtube.Video, ext string)
 	// 如果配置文件中没有设置输出模板，则使用默认模板
 	template := ytd.config.OutputTemplate
 	if template == "" {
-		template = "%(title)s.%(ext)s"
+		template = "%(platform)s_%(content_type)s_%(title)s_%(id)s_%(timestamp)s.%(ext)s"
 	}
 
 	// 替换模板变量
 	result := template
 
+	// 替换平台信息
+	platform := "youtube"
+	result = strings.ReplaceAll(result, "%(platform)s", platform)
+
+	// 替换内容类型
+	contentType := "short"
+	// 根据视频时长判断内容类型
+	if video.Duration.Seconds() > 600 { // 10分钟以上为长视频
+		contentType = "long"
+	}
+	result = strings.ReplaceAll(result, "%(content_type)s", contentType)
+
 	// 替换标题
 	title := utils.SanitizeFilename(video.Title)
 	// 应用文件名最大长度限制
-	if ytd.config.FilenameMaxLength > 0 && len(title) > ytd.config.FilenameMaxLength {
-		title = utils.TruncateString(title, ytd.config.FilenameMaxLength)
+	if ytd.config.FilenameMaxLength > 0 {
+		titleRunes := []rune(title)
+		if len(titleRunes) > ytd.config.FilenameMaxLength {
+			title = utils.TruncateString(title, ytd.config.FilenameMaxLength)
+		}
 	}
 	result = strings.ReplaceAll(result, "%(title)s", title)
+
+	// 替换播放列表名称（如果有）
+	playlistName := ""
+	result = strings.ReplaceAll(result, "%(playlist)s", playlistName)
 
 	// 替换ID
 	result = strings.ReplaceAll(result, "%(id)s", video.ID)
@@ -486,6 +524,16 @@ func (ytd *YouTubeDownloader) generateFilename(video *youtube.Video, ext string)
 	}
 	for strings.Contains(result, "..") {
 		result = strings.ReplaceAll(result, "..", ".")
+	}
+
+	// 对整个文件名应用长度限制
+	if ytd.config.FilenameMaxLength > 0 {
+		// 使用字符长度而不是字节长度
+		runes := []rune(result)
+		if len(runes) > ytd.config.FilenameMaxLength {
+			// 直接对整个文件名进行截断，而不是只截断标题
+			result = utils.TruncateString(result, ytd.config.FilenameMaxLength)
+		}
 	}
 
 	return result

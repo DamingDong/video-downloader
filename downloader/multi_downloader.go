@@ -3,10 +3,15 @@ package downloader
 import (
 	"encoding/json"
 	"fmt"
+	"io"
+	"io/ioutil"
 	"log"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -55,13 +60,39 @@ func (mpd *MultiPlatformDownloader) GetVideoInfo(url string) (*VideoInfo, error)
 		ytDlpPath = "yt-dlp"
 	}
 
-	cmd := exec.Command(ytDlpPath,
+	// 构建命令参数
+	args := []string{
 		"--dump-json",
-		url)
+	}
+
+	// 抖音和TikTok的特殊处理
+	if strings.Contains(url, "douyin.com") || strings.Contains(url, "tiktok.com") {
+		// 使用--no-check-certificate来避免证书问题
+		// 使用--user-agent来模拟浏览器
+		args = append(args, "--no-check-certificate")
+		args = append(args, "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+		// 使用--referer
+		args = append(args, "--referer", "https://www.douyin.com/")
+	}
+
+	// 添加Cookie文件参数
+	if _, err := os.Stat(mpd.config.CookieFile); err == nil {
+		args = append(args, "--cookies", mpd.config.CookieFile)
+		log.Printf("使用Cookie文件: %s", mpd.config.CookieFile)
+	}
+
+	args = append(args, url)
+
+	cmd := exec.Command(ytDlpPath, args...)
+
+	// 捕获标准错误
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
 
 	output, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("获取视频信息失败: %w", err)
+		log.Printf("yt-dlp错误输出: %s", stderr.String())
+		return nil, fmt.Errorf("获取视频信息失败: %w, 错误详情: %s", err, stderr.String())
 	}
 
 	var info struct {
@@ -90,11 +121,43 @@ func (mpd *MultiPlatformDownloader) GetVideoInfo(url string) (*VideoInfo, error)
 }
 
 func (mpd *MultiPlatformDownloader) Download(url, outputDir, resolution string) (*DownloadResult, error) {
-	log.Printf("[调试] 开始处理下载请求: %s", url)
+	log.Printf("[多平台下载器] 开始处理下载请求: %s", url)
+
+	// 获取平台类型
+	platform := utils.GetWebsiteType(url)
+	// 获取平台特定的输出目录
+	platformOutputDir := mpd.config.GetPlatformOutputDir(platform)
+	log.Printf("[多平台下载器] 检测到平台: %s, 使用输出目录: %s", platform, platformOutputDir)
+
+	// 确保平台输出目录存在
+	if err := os.MkdirAll(platformOutputDir, 0755); err != nil {
+		log.Printf("[多平台下载器] 创建平台输出目录失败: %v", err)
+		return nil, fmt.Errorf("创建输出目录失败: %w", err)
+	}
+	log.Printf("[多平台下载器] 平台输出目录已准备就绪: %s", platformOutputDir)
+
+	// 首先检查是否是抖音视频
+	if strings.Contains(url, "douyin.com/video/") {
+		log.Printf("[调试] 检测到抖音视频URL，使用专门的抖音下载方法")
+		return mpd.downloadDouyinVideo(url, platformOutputDir)
+	}
 
 	// 首先检查URL类型，判断是否为频道或播放列表
 	isPlaylist := strings.Contains(url, "list=")
-	isChannel := strings.Contains(url, "/@") || strings.Contains(url, "/channel/") || strings.Contains(url, "/c/") || strings.Contains(url, "/user/")
+
+	// 改进的频道检测逻辑
+	// TikTok: 包含/@但不含/video/的是频道，包含/video/的是单个视频
+	// 抖音: 包含/user/但不含modal_id=的是频道，包含modal_id=的是单个视频
+	// YouTube: 包含/@、/channel/、/c/、/user/但不含/watch?v=的是频道，包含/watch?v=的是单个视频
+	isChannel := false
+	if strings.Contains(url, "tiktok.com") {
+		isChannel = strings.Contains(url, "/@") && !strings.Contains(url, "/video/")
+	} else if strings.Contains(url, "douyin.com") {
+		isChannel = strings.Contains(url, "/user/") && !strings.Contains(url, "modal_id=")
+	} else {
+		// 其他平台使用原有的检测逻辑
+		isChannel = (strings.Contains(url, "/@") || strings.Contains(url, "/channel/") || strings.Contains(url, "/c/") || strings.Contains(url, "/user/")) && !strings.Contains(url, "/watch?v=")
+	}
 
 	log.Printf("[调试] URL类型: 播放列表=%t, 频道=%t", isPlaylist, isChannel)
 
@@ -110,29 +173,39 @@ func (mpd *MultiPlatformDownloader) Download(url, outputDir, resolution string) 
 		}
 
 		qualityFormat := utils.GetQualityFormat(resolution)
-		// 使用配置文件中的输出模板
-		outputTemplate := filepath.Join(outputDir, mpd.config.OutputTemplate)
+		// 对于播放列表下载，使用更简单的输出模板，避免NA_NA_前缀
+		outputTemplate := filepath.Join(platformOutputDir, "%(title)s_%(id)s_%(timestamp)s.%(ext)s")
 		// 如果配置文件中没有设置输出模板，则使用默认模板
-		if mpd.config.OutputTemplate == "" {
-			outputTemplate = filepath.Join(outputDir, "%(title)s.%(ext)s")
+		if mpd.config.OutputTemplate != "" {
+			// 使用配置文件中的模板，但移除可能导致NA_NA_前缀的变量
+			template := mpd.config.OutputTemplate
+			// 替换模板变量，确保不会出现NA值
+			template = strings.ReplaceAll(template, "%(platform)s", platform)
+			template = strings.ReplaceAll(template, "%(content_type)s", "short")
+			outputTemplate = filepath.Join(platformOutputDir, template)
 		}
 
-		// 修改格式参数，使用已经合并好的格式，避免单独下载视频和音频文件
-		// 使用best[height<=720]格式，直接下载已经合并好的视频
-		qualityFormat = "best[height<=720]"
+		// 改进的格式选择逻辑
+		// 对于TikTok和抖音，使用best格式，因为这些平台的视频格式可能不标准
+		if platform == "tiktok" || platform == "douyin" {
+			qualityFormat = "best"
+		} else {
+			// 其他平台使用best[height<=720]格式，直接下载已经合并好的视频
+			qualityFormat = "best[height<=720]"
+		}
 
 		// 根据URL类型设置不同的下载参数
 		args := []string{
 			"-f", qualityFormat,
 			"-o", outputTemplate,
 			"--no-warnings",
-			"--ignore-errors",                                                        // 忽略错误，继续下载其他视频
-			"--continue",                                                             // 支持断点续传
-			"--no-overwrites",                                                        // 不覆盖已存在的文件
-			"--download-archive", filepath.Join(outputDir, "downloaded_archive.txt"), // 记录已下载的视频ID，避免重复下载
+			"--ignore-errors",                                                                // 忽略错误，继续下载其他视频
+			"--continue",                                                                     // 支持断点续传
+			"--no-overwrites",                                                                // 不覆盖已存在的文件
+			"--download-archive", filepath.Join(platformOutputDir, "downloaded_archive.txt"), // 记录已下载的视频ID，避免重复下载
 		}
 
-		// 如果需要生成Meta文件，则添加--write-info-json参数
+		// 对于播放列表下载，生成JSON文件（用于后续生成TXT元数据文件）
 		if mpd.config.GenerateMetaFile {
 			args = append(args, "--write-info-json")
 		}
@@ -166,6 +239,13 @@ func (mpd *MultiPlatformDownloader) Download(url, outputDir, resolution string) 
 			log.Printf("[调试] 检测到频道URL，限制只下载最新的10个视频")
 		} else if isPlaylist {
 			log.Printf("[调试] 检测到播放列表URL，支持完整下载")
+		}
+
+		// 为抖音和TikTok添加特殊参数
+		if platform == "tiktok" || platform == "douyin" {
+			args = append(args, "--no-check-certificate")
+			args = append(args, "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+			args = append(args, "--referer", "https://www.douyin.com/")
 		}
 
 		if _, err := os.Stat(mpd.config.CookieFile); err == nil {
@@ -213,7 +293,7 @@ func (mpd *MultiPlatformDownloader) Download(url, outputDir, resolution string) 
 
 		// 处理Meta文件的生成
 		if mpd.config.GenerateMetaFile {
-			if err := mpd.ProcessMetaFiles(outputDir); err != nil {
+			if err := mpd.ProcessMetaFiles(platformOutputDir); err != nil {
 				log.Printf("处理Meta文件失败: %v", err)
 			}
 		}
@@ -224,7 +304,7 @@ func (mpd *MultiPlatformDownloader) Download(url, outputDir, resolution string) 
 			Success:    true,
 			VideoID:    "",
 			Title:      "频道/播放列表下载",
-			FilePath:   outputDir,
+			FilePath:   platformOutputDir,
 			FileSize:   0,
 			Error:      nil,
 			RetryCount: 0,
@@ -238,7 +318,6 @@ func (mpd *MultiPlatformDownloader) Download(url, outputDir, resolution string) 
 		return nil, err
 	}
 
-	website := utils.GetWebsiteType(url)
 	uniqueID := mpd.getUniqueID(url, info)
 
 	if mpd.indexer.IsDownloaded(uniqueID) {
@@ -254,20 +333,25 @@ func (mpd *MultiPlatformDownloader) Download(url, outputDir, resolution string) 
 		}, nil
 	}
 
-	log.Printf("开始下载: %s (ID: %s, 网站: %s, 分辨率: %s)", info.Title, uniqueID, website, resolution)
+	log.Printf("开始下载: %s (ID: %s, 网站: %s, 分辨率: %s)", info.Title, uniqueID, platform, resolution)
 
 	qualityFormat := utils.GetQualityFormat(resolution)
 	// 生成文件名
 	filename := mpd.generateFilename(info, ".mp4")
-	filePath := filepath.Join(outputDir, filename)
+	filePath := filepath.Join(platformOutputDir, filename)
 
 	if err := utils.CleanupZeroByteFiles(filePath); err != nil {
 		log.Printf("清理0字节文件失败: %v", err)
 	}
 
-	// 修改格式参数，使用已经合并好的格式，避免单独下载视频和音频文件
-	// 使用best[height<=720]格式，直接下载已经合并好的视频
-	qualityFormat = "best[height<=720]"
+	// 改进的格式选择逻辑
+	// 对于TikTok和抖音，使用best格式，因为这些平台的视频格式可能不标准
+	if platform == "tiktok" || platform == "douyin" {
+		qualityFormat = "best"
+	} else {
+		// 其他平台使用best[height<=720]格式，直接下载已经合并好的视频
+		qualityFormat = "best[height<=720]"
+	}
 
 	args := []string{
 		"-f", qualityFormat,
@@ -344,7 +428,7 @@ func (mpd *MultiPlatformDownloader) Download(url, outputDir, resolution string) 
 
 		// 处理Meta文件的生成
 		if mpd.config.GenerateMetaFile {
-			if err := mpd.ProcessMetaFiles(outputDir); err != nil {
+			if err := mpd.ProcessMetaFiles(platformOutputDir); err != nil {
 				log.Printf("处理Meta文件失败: %v", err)
 			}
 		}
@@ -379,24 +463,330 @@ func (mpd *MultiPlatformDownloader) MarkDownloaded(videoID string) error {
 	return nil
 }
 
+// downloadDouyinVideo 专门处理抖音视频的下载，不依赖 yt-dlp
+func (mpd *MultiPlatformDownloader) downloadDouyinVideo(url, outputDir string) (*DownloadResult, error) {
+	log.Printf("[调试] 开始处理抖音视频下载: %s", url)
+
+	// 确保输出目录存在
+	if err := os.MkdirAll(outputDir, 0755); err != nil {
+		return nil, fmt.Errorf("创建输出目录失败: %w", err)
+	}
+
+	// 提取视频ID
+	videoID := ""
+	match := regexp.MustCompile(`douyin\.com/video/(\d+)`).FindStringSubmatch(url)
+	if len(match) > 1 {
+		videoID = match[1]
+		log.Printf("[调试] 提取到视频ID: %s", videoID)
+	} else {
+		return nil, fmt.Errorf("无法提取视频ID")
+	}
+
+	// 检查是否已经下载过
+	if mpd.indexer.IsDownloaded(videoID) {
+		log.Printf("[调试] 视频已下载: %s", videoID)
+		return &DownloadResult{
+			Success:    false,
+			VideoID:    videoID,
+			Title:      "",
+			FilePath:   "",
+			FileSize:   0,
+			Error:      fmt.Errorf("视频已下载"),
+			RetryCount: 0,
+		}, nil
+	}
+
+	// 构建请求头
+	headers := map[string]string{
+		"User-Agent":                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+		"Referer":                   "https://www.douyin.com/",
+		"Accept":                    "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+		"Accept-Language":           "zh-CN,zh;q=0.8,en-US;q=0.5,en;q=0.3",
+		"Accept-Encoding":           "gzip, deflate, br",
+		"DNT":                       "1",
+		"Connection":                "keep-alive",
+		"Upgrade-Insecure-Requests": "1",
+	}
+
+	// 构建请求
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("创建请求失败: %w", err)
+	}
+
+	// 添加请求头
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
+
+	// 添加cookies
+	if _, err := os.Stat(mpd.config.CookieFile); err == nil {
+		log.Printf("[调试] 使用Cookie文件: %s", mpd.config.CookieFile)
+		// 解析cookie文件
+		cookies, err := mpd.parseCookieFile(mpd.config.CookieFile)
+		if err == nil {
+			for _, cookie := range cookies {
+				req.AddCookie(cookie)
+			}
+			log.Printf("[调试] 成功添加 %d 个cookie", len(cookies))
+		} else {
+			log.Printf("[调试] 解析cookie文件失败: %v", err)
+		}
+	}
+
+	// 发送请求
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+	}
+
+	var lastErr error
+	for retry := 0; retry < mpd.config.MaxRetries; retry++ {
+		if retry > 0 {
+			delay := mpd.config.BaseRetryDelay * time.Duration(retry)
+			log.Printf("[调试] 重试 %d/%d，等待 %v 后重试...", retry, mpd.config.MaxRetries, delay)
+			time.Sleep(delay)
+		}
+
+		log.Printf("[调试] 发送请求获取抖音视频页面...")
+		response, err := client.Do(req)
+		if err != nil {
+			lastErr = err
+			log.Printf("[调试] 请求失败 (尝试 %d/%d): %v", retry+1, mpd.config.MaxRetries, err)
+			continue
+		}
+
+		defer response.Body.Close()
+
+		if response.StatusCode != http.StatusOK {
+			lastErr = fmt.Errorf("请求失败，状态码: %d", response.StatusCode)
+			log.Printf("[调试] 请求失败，状态码: %d", response.StatusCode)
+			continue
+		}
+
+		// 读取响应内容
+		body, err := ioutil.ReadAll(response.Body)
+		if err != nil {
+			lastErr = err
+			log.Printf("[调试] 读取响应失败: %v", err)
+			continue
+		}
+
+		// 保存响应内容到文件，以便分析
+		responsePath := filepath.Join(outputDir, fmt.Sprintf("douyin_response_%s.html", videoID))
+		if err := os.WriteFile(responsePath, body, 0644); err != nil {
+			log.Printf("[调试] 保存响应内容失败: %v", err)
+		}
+		log.Printf("[调试] 响应内容已保存到: %s", responsePath)
+
+		// 提取视频URL
+		videoURL := mpd.extractVideoURLFromResponse(string(body))
+		if videoURL == "" {
+			lastErr = fmt.Errorf("无法从响应中提取视频URL")
+			log.Printf("[调试] 无法从响应中提取视频URL")
+			continue
+		}
+
+		log.Printf("[调试] 找到视频URL: %s", videoURL)
+
+		// 生成文件名
+		filename := fmt.Sprintf("douyin_%s_%d.mp4", videoID, time.Now().Unix())
+		filePath := filepath.Join(outputDir, filename)
+
+		// 下载视频
+		log.Printf("[调试] 开始下载视频到: %s", filePath)
+		fileSize, err := mpd.downloadFile(videoURL, filePath)
+		if err != nil {
+			lastErr = err
+			log.Printf("[调试] 下载视频失败: %v", err)
+			continue
+		}
+
+		// 标记为已下载
+		mpd.indexer.MarkDownloaded(videoID)
+
+		log.Printf("[调试] 抖音视频下载成功: %s", filePath)
+		return &DownloadResult{
+			Success:    true,
+			VideoID:    videoID,
+			Title:      fmt.Sprintf("抖音视频_%s", videoID),
+			FilePath:   filePath,
+			FileSize:   fileSize,
+			Error:      nil,
+			RetryCount: retry,
+		}, nil
+	}
+
+	return nil, fmt.Errorf("下载抖音视频失败: %w (尝试 %d 次后放弃)", lastErr, mpd.config.MaxRetries)
+}
+
+// parseCookieFile 解析Netscape格式的cookie文件
+func (mpd *MultiPlatformDownloader) parseCookieFile(cookieFile string) ([]*http.Cookie, error) {
+	content, err := os.ReadFile(cookieFile)
+	if err != nil {
+		return nil, err
+	}
+
+	lines := strings.Split(string(content), "\n")
+	var cookies []*http.Cookie
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		parts := strings.Split(line, "\t")
+		if len(parts) < 7 {
+			continue
+		}
+
+		domain := parts[0]
+		path := parts[2]
+		secure := parts[3] == "TRUE"
+		expiry := parts[4]
+		name := parts[5]
+		value := parts[6]
+
+		expiryInt, err := strconv.ParseInt(expiry, 10, 64)
+		if err != nil {
+			expiryInt = 0
+		}
+
+		cookie := &http.Cookie{
+			Name:     name,
+			Value:    value,
+			Domain:   domain,
+			Path:     path,
+			Secure:   secure,
+			HttpOnly: false,
+		}
+
+		if expiryInt > 0 {
+			cookie.Expires = time.Unix(expiryInt, 0)
+		}
+
+		cookies = append(cookies, cookie)
+	}
+
+	return cookies, nil
+}
+
+// extractVideoURLFromResponse 从响应中提取视频URL
+func (mpd *MultiPlatformDownloader) extractVideoURLFromResponse(body string) string {
+	// 尝试不同的方法提取视频URL
+	patterns := []string{
+		// 方法1: 查找playAddr或play_addr
+		`playAddr[\s\S]*?"([^"]+\.mp4[^"]*)"`,
+		`play_addr[\s\S]*?"([^"]+\.mp4[^"]*)"`,
+		// 方法2: 查找video或videoList
+		`video[\s\S]*?"([^"]+\.mp4[^"]*)"`,
+		`videoList[\s\S]*?"([^"]+\.mp4[^"]*)"`,
+		// 方法3: 查找url_list
+		`url_list[\s\S]*?"([^"]+\.mp4[^"]*)"`,
+		// 方法4: 直接查找mp4 URL
+		`https?://[^"]+\.mp4[^"]*`,
+	}
+
+	for _, pattern := range patterns {
+		match := regexp.MustCompile(pattern).FindStringSubmatch(body)
+		if len(match) > 1 {
+			videoURL := match[1]
+			// 确保URL是完整的
+			if !strings.HasPrefix(videoURL, "http") {
+				videoURL = "https:" + videoURL
+			}
+			return videoURL
+		}
+	}
+
+	return ""
+}
+
+// downloadFile 下载文件
+func (mpd *MultiPlatformDownloader) downloadFile(url, filePath string) (int64, error) {
+	// 构建请求
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return 0, err
+	}
+
+	// 添加请求头
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	req.Header.Set("Referer", "https://www.douyin.com/")
+
+	// 发送请求
+	client := &http.Client{
+		Timeout: 60 * time.Second,
+	}
+
+	response, err := client.Do(req)
+	if err != nil {
+		return 0, err
+	}
+
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("请求失败，状态码: %d", response.StatusCode)
+	}
+
+	// 创建文件
+	file, err := os.Create(filePath)
+	if err != nil {
+		return 0, err
+	}
+
+	defer file.Close()
+
+	// 复制内容
+	fileSize, err := io.Copy(file, response.Body)
+	if err != nil {
+		return 0, err
+	}
+
+	return fileSize, nil
+}
+
 // generateFilename 根据配置文件中的OutputTemplate生成文件名
 func (mpd *MultiPlatformDownloader) generateFilename(info *VideoInfo, ext string) string {
 	// 如果配置文件中没有设置输出模板，则使用默认模板
 	template := mpd.config.OutputTemplate
 	if template == "" {
-		template = "%(title)s.%(ext)s"
+		template = "%(platform)s_%(content_type)s_%(title)s_%(id)s_%(timestamp)s.%(ext)s"
 	}
 
 	// 替换模板变量
 	result := template
 
+	// 替换平台信息
+	platform := info.Extractor
+	if platform == "" {
+		platform = "unknown"
+	}
+	result = strings.ReplaceAll(result, "%(platform)s", platform)
+
+	// 替换内容类型
+	contentType := "short"
+	// 根据视频时长判断内容类型
+	if info.Duration > 600 { // 10分钟以上为长视频
+		contentType = "long"
+	}
+	result = strings.ReplaceAll(result, "%(content_type)s", contentType)
+
 	// 替换标题
 	title := utils.SanitizeFilename(info.Title)
 	// 应用文件名最大长度限制
-	if mpd.config.FilenameMaxLength > 0 && len(title) > mpd.config.FilenameMaxLength {
-		title = utils.TruncateString(title, mpd.config.FilenameMaxLength)
+	if mpd.config.FilenameMaxLength > 0 {
+		titleRunes := []rune(title)
+		if len(titleRunes) > mpd.config.FilenameMaxLength {
+			title = utils.TruncateString(title, mpd.config.FilenameMaxLength)
+		}
 	}
 	result = strings.ReplaceAll(result, "%(title)s", title)
+
+	// 替换播放列表名称（如果有）
+	playlistName := ""
+	result = strings.ReplaceAll(result, "%(playlist)s", playlistName)
 
 	// 替换ID
 	result = strings.ReplaceAll(result, "%(id)s", info.ID)
@@ -443,6 +833,16 @@ func (mpd *MultiPlatformDownloader) generateFilename(info *VideoInfo, ext string
 	}
 	for strings.Contains(result, "..") {
 		result = strings.ReplaceAll(result, "..", ".")
+	}
+
+	// 对整个文件名应用长度限制
+	if mpd.config.FilenameMaxLength > 0 {
+		// 使用字符长度而不是字节长度
+		runes := []rune(result)
+		if len(runes) > mpd.config.FilenameMaxLength {
+			// 直接对整个文件名进行截断，而不是只截断标题
+			result = utils.TruncateString(result, mpd.config.FilenameMaxLength)
+		}
 	}
 
 	return result
@@ -526,6 +926,13 @@ func (mpd *MultiPlatformDownloader) ProcessMetaFiles(outputDir string) error {
 			}
 
 			log.Printf("生成Meta文件: %s", txtPath)
+
+			// 生成TXT文件后删除JSON文件
+			if err := os.Remove(jsonPath); err != nil {
+				log.Printf("删除JSON文件失败: %v", err)
+			} else {
+				log.Printf("删除JSON文件: %s", jsonPath)
+			}
 		}
 	}
 
@@ -554,8 +961,10 @@ func (mpd *MultiPlatformDownloader) ProcessMetaFiles(outputDir string) error {
 
 			// 解析JSON数据
 			var info struct {
-				Title string `json:"title"`
-				ID    string `json:"id"`
+				Title     string `json:"title"`
+				ID        string `json:"id"`
+				Extractor string `json:"extractor"`
+				Duration  int    `json:"duration"`
 			}
 
 			if err := json.Unmarshal(data, &info); err != nil {
@@ -565,8 +974,10 @@ func (mpd *MultiPlatformDownloader) ProcessMetaFiles(outputDir string) error {
 
 			// 创建VideoInfo对象
 			videoInfo := &VideoInfo{
-				Title: info.Title,
-				ID:    info.ID,
+				Title:     info.Title,
+				ID:        info.ID,
+				Extractor: info.Extractor,
+				Duration:  info.Duration,
 			}
 
 			// 生成新的文件名

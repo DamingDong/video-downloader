@@ -9,50 +9,52 @@ import (
 )
 
 type Config struct {
-	BatchSize              int           `json:"batch_size"`
-	MaxConcurrency         int           `json:"max_concurrency"`
-	TimeoutPerVideo        time.Duration `json:"timeout_per_video"`
-	MaxRetries             int           `json:"max_retries"`
-	BaseRetryDelay         time.Duration `json:"base_retry_delay"`
-	DefaultOutputDir       string        `json:"default_output_dir"`
-	ResourceUrlsDir        string        `json:"resource_urls_dir"`
-	CookieFile             string        `json:"cookie_file"`
-	IndexFile              string        `json:"index_file"`
-	RecordFile             string        `json:"record_file"`
-	DefaultResolution      string        `json:"default_resolution"`
-	DefaultDownloader      string        `json:"default_downloader"`
-	GenerateMetaFile       bool          `json:"generate_meta_file"`
-	OutputTemplate         string        `json:"output_template"`
-	FilenameMaxLength      int           `json:"filename_max_length"`
-	RecodeVideo            string        `json:"recode_video"`
-	MaxConcurrentDownloads int           `json:"max_concurrent_downloads"`
-	Proxy                  string        `json:"proxy"`
-	LimitRate              string        `json:"limit_rate"`
-	FfmpegPath             string        `json:"ffmpeg_path"`
+	BatchSize              int               `json:"batch_size"`
+	MaxConcurrency         int               `json:"max_concurrency"`
+	TimeoutPerVideo        time.Duration     `json:"timeout_per_video"`
+	MaxRetries             int               `json:"max_retries"`
+	BaseRetryDelay         time.Duration     `json:"base_retry_delay"`
+	DefaultOutputDir       string            `json:"default_output_dir"`
+	PlatformOutputDirs     map[string]string `json:"platform_output_dirs"`
+	ResourceUrlsDir        string            `json:"resource_urls_dir"`
+	CookieFile             string            `json:"cookie_file"`
+	IndexFile              string            `json:"index_file"`
+	RecordFile             string            `json:"record_file"`
+	DefaultResolution      string            `json:"default_resolution"`
+	DefaultDownloader      string            `json:"default_downloader"`
+	GenerateMetaFile       bool              `json:"generate_meta_file"`
+	OutputTemplate         string            `json:"output_template"`
+	FilenameMaxLength      int               `json:"filename_max_length"`
+	RecodeVideo            string            `json:"recode_video"`
+	MaxConcurrentDownloads int               `json:"max_concurrent_downloads"`
+	Proxy                  string            `json:"proxy"`
+	LimitRate              string            `json:"limit_rate"`
+	FfmpegPath             string            `json:"ffmpeg_path"`
 }
 
 // ConfigJSON 用于JSON序列化和反序列化的辅助结构体
 type ConfigJSON struct {
-	BatchSize              int    `json:"batch_size"`
-	MaxConcurrency         int    `json:"max_concurrency"`
-	TimeoutPerVideo        string `json:"timeout_per_video"`
-	MaxRetries             int    `json:"max_retries"`
-	BaseRetryDelay         string `json:"base_retry_delay"`
-	DefaultOutputDir       string `json:"default_output_dir"`
-	ResourceUrlsDir        string `json:"resource_urls_dir"`
-	CookieFile             string `json:"cookie_file"`
-	IndexFile              string `json:"index_file"`
-	RecordFile             string `json:"record_file"`
-	DefaultResolution      string `json:"default_resolution"`
-	DefaultDownloader      string `json:"default_downloader"`
-	GenerateMetaFile       bool   `json:"generate_meta_file"`
-	OutputTemplate         string `json:"output_template"`
-	FilenameMaxLength      int    `json:"filename_max_length"`
-	RecodeVideo            string `json:"recode_video"`
-	MaxConcurrentDownloads int    `json:"max_concurrent_downloads"`
-	Proxy                  string `json:"proxy"`
-	LimitRate              string `json:"limit_rate"`
-	FfmpegPath             string `json:"ffmpeg_path"`
+	BatchSize              int               `json:"batch_size"`
+	MaxConcurrency         int               `json:"max_concurrency"`
+	TimeoutPerVideo        string            `json:"timeout_per_video"`
+	MaxRetries             int               `json:"max_retries"`
+	BaseRetryDelay         string            `json:"base_retry_delay"`
+	DefaultOutputDir       string            `json:"default_output_dir"`
+	PlatformOutputDirs     map[string]string `json:"platform_output_dirs"`
+	ResourceUrlsDir        string            `json:"resource_urls_dir"`
+	CookieFile             string            `json:"cookie_file"`
+	IndexFile              string            `json:"index_file"`
+	RecordFile             string            `json:"record_file"`
+	DefaultResolution      string            `json:"default_resolution"`
+	DefaultDownloader      string            `json:"default_downloader"`
+	GenerateMetaFile       bool              `json:"generate_meta_file"`
+	OutputTemplate         string            `json:"output_template"`
+	FilenameMaxLength      int               `json:"filename_max_length"`
+	RecodeVideo            string            `json:"recode_video"`
+	MaxConcurrentDownloads int               `json:"max_concurrent_downloads"`
+	Proxy                  string            `json:"proxy"`
+	LimitRate              string            `json:"limit_rate"`
+	FfmpegPath             string            `json:"ffmpeg_path"`
 }
 
 // UnmarshalJSON 实现自定义JSON反序列化方法
@@ -67,6 +69,7 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 	c.MaxConcurrency = jsonCfg.MaxConcurrency
 	c.MaxRetries = jsonCfg.MaxRetries
 	c.DefaultOutputDir = jsonCfg.DefaultOutputDir
+	c.PlatformOutputDirs = jsonCfg.PlatformOutputDirs
 	c.ResourceUrlsDir = jsonCfg.ResourceUrlsDir
 	c.CookieFile = jsonCfg.CookieFile
 	c.IndexFile = jsonCfg.IndexFile
@@ -110,6 +113,7 @@ func (c *Config) MarshalJSON() ([]byte, error) {
 		MaxRetries:             c.MaxRetries,
 		BaseRetryDelay:         c.BaseRetryDelay.String(),
 		DefaultOutputDir:       c.DefaultOutputDir,
+		PlatformOutputDirs:     c.PlatformOutputDirs,
 		ResourceUrlsDir:        c.ResourceUrlsDir,
 		CookieFile:             c.CookieFile,
 		IndexFile:              c.IndexFile,
@@ -131,12 +135,19 @@ func (c *Config) MarshalJSON() ([]byte, error) {
 
 func DefaultConfig() *Config {
 	return &Config{
-		BatchSize:              10,
-		MaxConcurrency:         3,
-		TimeoutPerVideo:        60 * time.Minute,
-		MaxRetries:             3,
-		BaseRetryDelay:         2 * time.Second,
-		DefaultOutputDir:       "Output",
+		BatchSize:        10,
+		MaxConcurrency:   3,
+		TimeoutPerVideo:  60 * time.Minute,
+		MaxRetries:       3,
+		BaseRetryDelay:   2 * time.Second,
+		DefaultOutputDir: "output",
+		PlatformOutputDirs: map[string]string{
+			"youtube":  "output/youtube",
+			"douyin":   "output/douyin",
+			"bilibili": "output/bilibili",
+			"tiktok":   "output/tiktok",
+			"other":    "output/other",
+		},
 		ResourceUrlsDir:        "resource_urls",
 		CookieFile:             "cookies.txt",
 		IndexFile:              ".video_downloaded.index",
@@ -144,13 +155,13 @@ func DefaultConfig() *Config {
 		DefaultResolution:      "720",
 		DefaultDownloader:      "auto",
 		GenerateMetaFile:       true,
-		OutputTemplate:         "%(title)s.%(ext)s",
+		OutputTemplate:         "%(platform)s_%(content_type)s_%(title)s_%(id)s_%(timestamp)s.%(ext)s",
 		FilenameMaxLength:      0,
 		RecodeVideo:            "",
 		MaxConcurrentDownloads: 3,
 		Proxy:                  "",
 		LimitRate:              "",
-		FfmpegPath:             "",
+		FfmpegPath:             "./deps/ffmpeg.exe",
 	}
 }
 
@@ -208,5 +219,21 @@ func (c *Config) GetOutputDir(baseDir string) string {
 	if baseDir != "" {
 		return baseDir
 	}
+	return c.DefaultOutputDir
+}
+
+// GetPlatformOutputDir 根据平台获取对应的输出目录
+func (c *Config) GetPlatformOutputDir(platform string) string {
+	// 如果PlatformOutputDirs不为空且包含该平台的配置，返回对应的目录
+	if c.PlatformOutputDirs != nil {
+		if dir, ok := c.PlatformOutputDirs[platform]; ok {
+			return dir
+		}
+		// 如果平台不存在但有other配置，返回other目录
+		if dir, ok := c.PlatformOutputDirs["other"]; ok {
+			return dir
+		}
+	}
+	// 否则返回默认输出目录
 	return c.DefaultOutputDir
 }

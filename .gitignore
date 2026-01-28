@@ -2,55 +2,57 @@
 batch_dl
 batch_download
 batch_download_new
+batch_download.exe
+batch_download_videos.exe
 
 # Cookie 文件（包含敏感信息）
 cookies.txt
 
 # 下载输出目录（排除视频文件）
-resource_urls/Output/*.mp4
-resource_urls/Output/*.m4v
-resource_urls/Output/*.m4a
-resource_urls/Output/*.mkv
-resource_urls/Output/*.avi
-resource_urls/Output/*.mov
-resource_urls/Output/*.wmv
-resource_urls/Output/*.webm
-resource_urls/Output/*.f302.webm.part
+resource_urls/output/*.mp4
+resource_urls/output/*.m4v
+resource_urls/output/*.m4a
+resource_urls/output/*.mkv
+resource_urls/output/*.avi
+resource_urls/output/*.mov
+resource_urls/output/*.wmv
+resource_urls/output/*.webm
+resource_urls/output/*.f302.webm.part
 
-# 排除整个 Output 目录下的视频子目录
-resource_urls/Output/youtube/
-resource_urls/Output/douyin/
-resource_urls/Output/weibo/
-resource_urls/Output/tiktok/
-resource_urls/Output/bilibili/
-resource_urls/Output/vimeo/
-resource_urls/Output/instagram/
-resource_urls/Output/twitter/
-resource_urls/Output/facebook/
-resource_urls/Output/unknown/
+# 排除整个 output 目录下的视频子目录
+resource_urls/output/youtube/
+resource_urls/output/douyin/
+resource_urls/output/weibo/
+resource_urls/output/tiktok/
+resource_urls/output/bilibili/
+resource_urls/output/vimeo/
+resource_urls/output/instagram/
+resource_urls/output/twitter/
+resource_urls/output/facebook/
+resource_urls/output/unknown/
 
-# 新的 Output 目录
-Output/*.mp4
-Output/*.m4v
-Output/*.m4a
-Output/*.mkv
-Output/*.avi
-Output/*.mov
-Output/*.wmv
-Output/*.webm
-Output/*.f302.webm.part
-Output/*.part
-Output/*.info.json
-Output/*.ytdl
-Output/*.txt
+# 新的 output 目录
+output/*.mp4
+output/*.m4v
+output/*.m4a
+output/*.mkv
+output/*.avi
+output/*.mov
+output/*.wmv
+output/*.webm
+output/*.f302.webm.part
+output/*.part
+output/*.info.json
+output/*.ytdl
+output/*.txt
 
 # 保留索引文件和文档
-!resource_urls/Output/.video_downloaded.index
-!resource_urls/Output/.youtube_downloaded.index
-!resource_urls/Output/下载记录.md
-!Output/.video_downloaded.index
-!Output/.video_downloaded.index.backup
-!Output/下载记录.md
+!resource_urls/output/.video_downloaded.index
+!resource_urls/output/.youtube_downloaded.index
+!resource_urls/output/下载记录.md
+!output/.video_downloaded.index
+!output/.video_downloaded.index.backup
+!output/下载记录.md
 
 # 临时文件
 *.tmp

@@ -2,7 +2,9 @@ package utils
 
 import (
 	"fmt"
+	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -120,4 +122,117 @@ func TruncateString(s string, maxLen int) string {
 		return string(runes[:maxLen])
 	}
 	return string(runes[:maxLen-3]) + "..."
+}
+
+// ValidateURL 验证URL是否有效
+func ValidateURL(urlStr string) error {
+	if urlStr == "" {
+		return fmt.Errorf("URL不能为空")
+	}
+
+	// 检查URL格式
+	parsedURL, err := url.Parse(urlStr)
+	if err != nil {
+		return fmt.Errorf("URL格式无效: %w", err)
+	}
+
+	// 检查URL是否包含协议
+	if parsedURL.Scheme == "" {
+		return fmt.Errorf("URL缺少协议 (http:// 或 https://)")
+	}
+
+	// 检查URL是否包含主机名
+	if parsedURL.Host == "" {
+		return fmt.Errorf("URL缺少主机名")
+	}
+
+	return nil
+}
+
+// ValidateURLs 批量验证URL列表
+func ValidateURLs(urls []string) ([]string, []error) {
+	validURLs := []string{}
+	errors := []error{}
+
+	for i, urlStr := range urls {
+		urlStr = strings.TrimSpace(urlStr)
+		if urlStr == "" || strings.HasPrefix(urlStr, "#") {
+			continue
+		}
+
+		if err := ValidateURL(urlStr); err != nil {
+			errors = append(errors, fmt.Errorf("URL %d: %w", i+1, err))
+		} else {
+			validURLs = append(validURLs, urlStr)
+		}
+	}
+
+	return validURLs, errors
+}
+
+// CleanupTempFiles 清理临时文件，特别是无后缀名的文件
+func CleanupTempFiles(dir string) error {
+	files, err := os.ReadDir(dir)
+	if err != nil {
+		return fmt.Errorf("读取目录失败: %w", err)
+	}
+
+	removedCount := 0
+	for _, file := range files {
+		if file.IsDir() {
+			continue
+		}
+
+		filename := file.Name()
+		// 清理无后缀名的文件
+		if filepath.Ext(filename) == "" {
+			filePath := filepath.Join(dir, filename)
+			if err := os.Remove(filePath); err != nil {
+				// 忽略删除错误
+				continue
+			}
+			removedCount++
+		}
+		// 清理其他常见临时文件
+		if strings.HasSuffix(filename, ".part") || strings.HasSuffix(filename, ".ytdl") {
+			filePath := filepath.Join(dir, filename)
+			if err := os.Remove(filePath); err != nil {
+				// 忽略删除错误
+				continue
+			}
+			removedCount++
+		}
+	}
+
+	if removedCount > 0 {
+		fmt.Printf("清理了 %d 个临时文件\n", removedCount)
+	}
+
+	return nil
+}
+
+// CleanupTempFilesRecursive 递归清理目录及其子目录中的临时文件
+func CleanupTempFilesRecursive(dir string) error {
+	// 清理当前目录
+	if err := CleanupTempFiles(dir); err != nil {
+		return err
+	}
+
+	// 递归清理子目录
+	files, err := os.ReadDir(dir)
+	if err != nil {
+		return fmt.Errorf("读取目录失败: %w", err)
+	}
+
+	for _, file := range files {
+		if file.IsDir() {
+			subDir := filepath.Join(dir, file.Name())
+			if err := CleanupTempFilesRecursive(subDir); err != nil {
+				// 忽略子目录清理错误
+				continue
+			}
+		}
+	}
+
+	return nil
 }

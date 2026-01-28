@@ -175,9 +175,23 @@ func processFromFile(filePath, resolution, outputDir string, dl downloader.Downl
 		return fmt.Errorf("读取文件失败: %w", err)
 	}
 
-	logger.GetLogger().Info("开始处理文件: %s (共 %d 个URL)", filePath, len(urls))
+	// 验证URL列表
+	validURLs, validationErrors := utils.ValidateURLs(urls)
+	if len(validationErrors) > 0 {
+		for _, err := range validationErrors {
+			logger.GetLogger().Error("URL验证失败: %v", err)
+		}
+		logger.GetLogger().Warn("发现 %d 个无效URL，将跳过这些URL", len(validationErrors))
+	}
 
-	return processURLs(urls, resolution, outputDir, dl, maxConcurrency)
+	if len(validURLs) == 0 {
+		logger.GetLogger().Error("没有有效的URL可以处理")
+		return nil
+	}
+
+	logger.GetLogger().Info("开始处理文件: %s (共 %d 个URL，其中 %d 个有效)", filePath, len(urls), len(validURLs))
+
+	return processURLs(validURLs, resolution, outputDir, dl, maxConcurrency)
 }
 
 func processFromDirectory(resolution, outputDir string, dl downloader.Downloader, idx *indexer.Indexer, maxConcurrency int) error {
@@ -223,10 +237,30 @@ func processURLs(urls []string, resolution, outputDir string, dl downloader.Down
 	// 动态并发控制：根据系统CPU核心数和网络状况调整
 	// 获取CPU核心数
 	cpuCount := runtime.NumCPU()
-	// 确保并发数不超过CPU核心数的2倍，避免系统过载
-	recommendedConcurrency := min(cpuCount*2, maxConcurrency)
-	// 但至少保持2个并发，确保下载效率
-	recommendedConcurrency = max(recommendedConcurrency, 2)
+
+	// 基础并发数：根据CPU核心数计算
+	baseConcurrency := cpuCount * 2
+
+	// 最大并发数限制：不超过配置的最大值，也不超过CPU核心数的4倍
+	maxPossibleConcurrency := min(baseConcurrency*2, maxConcurrency)
+	maxPossibleConcurrency = min(maxPossibleConcurrency, cpuCount*4)
+
+	// 最小并发数：确保至少有1个并发
+	minConcurrency := 1
+
+	// 推荐并发数：根据URL数量动态调整
+	recommendedConcurrency := baseConcurrency
+	if len(urls) < baseConcurrency {
+		// URL数量较少时，使用URL数量作为并发数
+		recommendedConcurrency = len(urls)
+	} else if len(urls) > maxPossibleConcurrency*2 {
+		// URL数量较多时，使用最大可能并发数
+		recommendedConcurrency = maxPossibleConcurrency
+	}
+
+	// 确保并发数在合理范围内
+	recommendedConcurrency = max(recommendedConcurrency, minConcurrency)
+	recommendedConcurrency = min(recommendedConcurrency, maxPossibleConcurrency)
 
 	semaphore := make(chan struct{}, recommendedConcurrency)
 	var wg sync.WaitGroup
@@ -235,9 +269,34 @@ func processURLs(urls []string, resolution, outputDir string, dl downloader.Down
 	successCount := 0
 	failCount := 0
 	skipCount := 0
+	completedCount := 0
+
+	// 进度更新间隔
+	progressInterval := 2 * time.Second
+	lastProgressUpdate := time.Now()
 
 	logger.GetLogger().BatchStart(len(urls), recommendedConcurrency)
-	logger.GetLogger().Info("使用动态并发控制，并发数: %d (基于CPU核心数: %d)", recommendedConcurrency, cpuCount)
+	logger.GetLogger().Info("使用动态并发控制，并发数: %d (基于CPU核心数: %d, URL数量: %d)", recommendedConcurrency, cpuCount, len(urls))
+	logger.GetLogger().Info("并发数范围: 最小=%d, 最大=%d, 基础=%d", minConcurrency, maxPossibleConcurrency, baseConcurrency)
+
+	// 启动进度显示goroutine
+	progressDone := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-progressDone:
+				return
+			default:
+				if time.Since(lastProgressUpdate) >= progressInterval {
+					progress := float64(completedCount) / float64(len(urls)) * 100
+					logger.GetLogger().Info("整体下载进度: %.2f%% (完成 %d/%d, 成功 %d, 失败 %d, 跳过 %d)",
+						progress, completedCount, len(urls), successCount, failCount, skipCount)
+					lastProgressUpdate = time.Now()
+				}
+				time.Sleep(500 * time.Millisecond)
+			}
+		}
+	}()
 
 	for i, url := range urls {
 		wg.Add(1)
@@ -249,6 +308,11 @@ func processURLs(urls []string, resolution, outputDir string, dl downloader.Down
 				// 释放信号量时添加短暂延迟，避免瞬间启动过多下载导致网络拥塞
 				time.Sleep(100 * time.Millisecond)
 				<-semaphore
+
+				// 更新完成计数和进度
+				errMutex.Lock()
+				completedCount++
+				errMutex.Unlock()
 			}()
 
 			logger.GetLogger().Debug("[%d/%d] 开始下载: %s", idx+1, len(urls), url)
@@ -284,8 +348,21 @@ func processURLs(urls []string, resolution, outputDir string, dl downloader.Down
 	}
 
 	wg.Wait()
+	close(progressDone)
+
+	// 最终进度更新
+	progress := float64(completedCount) / float64(len(urls)) * 100
+	logger.GetLogger().Info("整体下载进度: %.2f%% (完成 %d/%d, 成功 %d, 失败 %d, 跳过 %d)",
+		progress, completedCount, len(urls), successCount, failCount, skipCount)
 
 	logger.GetLogger().BatchComplete(successCount, failCount, skipCount, len(urls))
+
+	// 清理临时文件
+	if err := utils.CleanupTempFilesRecursive(outputDir); err != nil {
+		logger.GetLogger().Warn("清理临时文件失败: %v", err)
+	} else {
+		logger.GetLogger().Info("临时文件清理完成")
+	}
 
 	return batchErr
 }

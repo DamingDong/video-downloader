@@ -1,0 +1,29 @@
+{
+  "batch_size": 10,
+  "max_concurrency": 3,
+  "timeout_per_video": "1h0m0s",
+  "max_retries": 3,
+  "base_retry_delay": "2s",
+  "default_output_dir": "output",
+  "platform_output_dirs": {
+    "youtube": "output/youtube",
+    "douyin": "output/douyin",
+    "bilibili": "output/bilibili",
+    "tiktok": "output/tiktok",
+    "other": "output/other"
+  },
+  "resource_urls_dir": "resource_urls",
+  "cookie_file": "www.douyin.com_cookies.txt",
+  "index_file": ".video_downloaded.index",
+  "record_file": "下载记录.md",
+  "default_resolution": "720",
+  "default_downloader": "auto",
+  "generate_meta_file": true,
+  "output_template": "%(platform)s_%(content_type)s_%(title)s_%(id)s_%(timestamp)s.%(ext)s",
+  "filename_max_length": 100,
+  "recode_video": "mp4",
+  "max_concurrent_downloads": 3,
+  "proxy": "",
+  "limit_rate": "1M",
+  "ffmpeg_path": "./deps/ffmpeg.exe"
+}
